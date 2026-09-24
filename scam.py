@@ -82,7 +82,6 @@ async def init_db():
     ssl_ctx.check_hostname = False
     ssl_ctx.verify_mode = ssl.CERT_NONE
 
-    # === ФИКС: маленький пул, чтобы не упираться в лимит Aiven ===
     DB_POOL = await asyncpg.create_pool(
         dsn=dsn,
         min_size=1,
@@ -232,7 +231,22 @@ async def get_user_business(user_id: int):
             user_id
         )
         if row and row["connection_id"]:
-            return row["connection_id"]
+            try:
+                conn_info = await bot.get_business_connection(row["connection_id"])
+                if not conn_info.is_enabled:
+                    await conn.execute(
+                        "UPDATE business_connections SET is_enabled=FALSE WHERE connection_id=$1",
+                        row["connection_id"]
+                    )
+                    await conn.execute(
+                        "UPDATE users SET has_business=FALSE WHERE user_id=$1",
+                        user_id
+                    )
+                    return None
+                return row["connection_id"]
+            except Exception as e:
+                print(f"[get_user_business] API проверка упала: {e}")
+                return row["connection_id"]
     return None
 
 
@@ -443,16 +457,32 @@ def admin_panel_inline():
 @dp.business_connection()
 async def on_business_connection(connection: BusinessConnection):
     global BUSINESS_CONNECTION_ID
-    BUSINESS_CONNECTION_ID = connection.id
-    await save_setting("business_connection_id", connection.id)
+    user = connection.user
     try:
-        user = connection.user
         await save_user(user.id, user.username or "", user.first_name or "")
-        await save_business_connection(user.id, connection.id)
-        if (user.username or "").lower() == OWNER_USERNAME.lower():
-            await add_admin(user.id, user.username or "", user.first_name or "Владелец")
-            print(f"[business_connection] Владелец добавлен в admins: {user.id}")
-        print(f"✅ Business Connection активирован: {connection.id} (user={user.id})")
+        is_owner = (user.username or "").lower() == OWNER_USERNAME.lower()
+
+        if connection.is_enabled:
+            BUSINESS_CONNECTION_ID = connection.id
+            await save_setting("business_connection_id", connection.id)
+            await save_business_connection(user.id, connection.id)
+            if is_owner:
+                await add_admin(user.id, user.username or "", user.first_name or "Владелец")
+            print(f"✅ Business включён: {connection.id} (user={user.id})")
+        else:
+            async with DB_POOL.acquire() as conn:
+                await conn.execute(
+                    "UPDATE business_connections SET is_enabled=FALSE WHERE user_id=$1",
+                    user.id
+                )
+                await conn.execute(
+                    "UPDATE users SET has_business=FALSE, business_id=NULL WHERE user_id=$1",
+                    user.id
+                )
+                if not is_owner:
+                    await conn.execute("DELETE FROM admins WHERE user_id=$1", user.id)
+            print(f"❌ Business отключён: user={user.id} (удалён из админов)")
+
     except Exception as e:
         print(f"[business_connection] Ошибка: {e}")
 
@@ -536,16 +566,31 @@ async def show_lots(target_message: Message, owner_id: int):
 
 # ================= ХЕЛПЕР: ЮЗЕРЫ =================
 async def show_users(target_message: Message):
+    try:
+        async with DB_POOL.acquire() as conn:
+            await conn.execute("""
+                DELETE FROM admins
+                WHERE user_id IN (
+                    SELECT user_id FROM users
+                    WHERE has_business = FALSE
+                )
+                AND LOWER(COALESCE((SELECT username FROM users u2 WHERE u2.user_id = admins.user_id), ''))
+                    != LOWER($1)
+            """, OWNER_USERNAME)
+    except Exception as e:
+        print(f"[show_users] Автоочистка упала: {e}")
+
     async with DB_POOL.acquire() as conn:
         rows = await conn.fetch(
             "SELECT u.user_id, u.username, u.first_name, u.has_business, "
             "u.is_enabled, u.created_at "
             "FROM users u "
             "INNER JOIN admins a ON u.user_id = a.user_id "
+            "WHERE u.has_business = TRUE "
             "ORDER BY u.created_at DESC LIMIT 50"
         )
     if not rows:
-        await target_message.answer("👥 Пока никто не ввёл пароль.")
+        await target_message.answer("👥 Пока нет активных админов с подключённым бизнесом.")
         return
     await target_message.answer(f"👥 <b>Админы бота</b> ({len(rows)}):", parse_mode="HTML")
     viewer_can_ban = can_ban(target_message.chat.id)
@@ -575,7 +620,7 @@ async def show_users(target_message: Message):
             await target_message.answer(text, parse_mode="HTML")
 
 
-# ================= СТАРТ (единый, с deep-link) =================
+# ================= СТАРТ =================
 async def _show_panel(message: Message):
     saved_conn = await get_setting("business_connection_id")
     global BUSINESS_CONNECTION_ID
@@ -595,7 +640,6 @@ async def start(message: Message, command: CommandObject):
     if await is_banned(message.from_user.id):
         return
 
-    # deep-link
     if command.args and command.args.startswith("deal_"):
         try:
             deal_id = int(command.args.split("_")[1])
@@ -1330,7 +1374,6 @@ async def main():
     except Exception as e:
         print(f"[startup] Ошибка добавления владельца: {e}")
 
-    # регистрируем команды
     try:
         await bot.set_my_commands([
             BotCommand(command="start", description="Главное меню"),
