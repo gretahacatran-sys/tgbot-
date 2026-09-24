@@ -12,7 +12,7 @@ from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
     LabeledPrice, PreCheckoutQuery, BusinessConnection,
     KeyboardButton, ReplyKeyboardMarkup, KeyboardButtonRequestUsers,
-    UsersShared
+    UsersShared, BotCommand
 )
 from aiogram.types import (
     InputRichMessage,
@@ -82,7 +82,15 @@ async def init_db():
     ssl_ctx.check_hostname = False
     ssl_ctx.verify_mode = ssl.CERT_NONE
 
-    DB_POOL = await asyncpg.create_pool(dsn=dsn, min_size=2, max_size=20, ssl=ssl_ctx)
+    # === ФИКС: маленький пул, чтобы не упираться в лимит Aiven ===
+    DB_POOL = await asyncpg.create_pool(
+        dsn=dsn,
+        min_size=1,
+        max_size=3,
+        ssl=ssl_ctx,
+        command_timeout=60,
+        max_inactive_connection_lifetime=60,
+    )
 
     async with DB_POOL.acquire() as conn:
         await conn.execute("""
@@ -269,7 +277,7 @@ async def unban_user(user_id: int):
 
 
 async def is_admin(user_id: int, username: str) -> bool:
-    if username == OWNER_USERNAME:
+    if username and username.lower() == OWNER_USERNAME.lower():
         return True
     async with DB_POOL.acquire() as conn:
         row = await conn.fetchrow("SELECT user_id FROM admins WHERE user_id=$1", user_id)
@@ -342,13 +350,17 @@ async def log_send(sender_id: int, sender_username: str, recipient_id: int,
 async def upload_to_catbox(file_path: str):
     url = "https://catbox.moe/user/api.php"
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as session:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30),
+            headers={"User-Agent": "Mozilla/5.0"}
+        ) as session:
             with open(file_path, "rb") as f:
                 data = aiohttp.FormData()
                 data.add_field("reqtype", "fileupload")
                 data.add_field("fileToUpload", f, filename="img.png", content_type="image/png")
                 async with session.post(url, data=data) as resp:
                     text = (await resp.text()).strip()
+                    print(f"[catbox] status={resp.status} resp={text[:200]}")
                     if text.startswith("http"):
                         return text
     except Exception as e:
@@ -359,11 +371,15 @@ async def upload_to_catbox(file_path: str):
 async def upload_to_telegraph(file_path: str):
     url = "https://telegra.ph/upload"
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30),
+            headers={"User-Agent": "Mozilla/5.0"}
+        ) as session:
             with open(file_path, "rb") as f:
                 data = aiohttp.FormData()
                 data.add_field("file", f, filename="img.png", content_type="image/png")
                 async with session.post(url, data=data) as resp:
+                    print(f"[telegra.ph] status={resp.status}")
                     if resp.status != 200:
                         return None
                     result = await resp.json()
@@ -378,6 +394,7 @@ async def upload_photo(file_path: str):
     link = await upload_to_catbox(file_path)
     if link:
         return link
+    print("[upload] catbox не сработал, пробую telegra.ph...")
     return await upload_to_telegraph(file_path)
 
 
@@ -402,6 +419,24 @@ class DealForm(StatesGroup):
     nft_link = State()
     price = State()
     select_chat = State()
+
+
+# ================= МЕНЮ-КНОПКА =================
+def main_menu_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="🏠 Меню")]],
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Нажми Меню"
+    )
+
+
+def admin_panel_inline():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Создать запрос", callback_data="new_deal")],
+        [InlineKeyboardButton(text="📋 Мои лоты", callback_data="my_lots")],
+        [InlineKeyboardButton(text="👥 Пользователи", callback_data="users_list")]
+    ])
 
 
 # ================= BUSINESS =================
@@ -468,7 +503,8 @@ async def activate_admin(message: Message):
         await add_admin(message.from_user.id, message.from_user.username or "", "Владелец")
     await message.answer(
         f"🔑 <b>Права администратора активированы!</b>\nИмя: {html.escape(name)}",
-        parse_mode="HTML"
+        parse_mode="HTML",
+        reply_markup=main_menu_kb()
     )
 
 
@@ -539,11 +575,33 @@ async def show_users(target_message: Message):
             await target_message.answer(text, parse_mode="HTML")
 
 
-# ================= СТАРТ =================
-@dp.message(CommandStart(deep_link=False))
-async def start(message: Message):
+# ================= СТАРТ (единый, с deep-link) =================
+async def _show_panel(message: Message):
+    saved_conn = await get_setting("business_connection_id")
     global BUSINESS_CONNECTION_ID
+    if saved_conn:
+        BUSINESS_CONNECTION_ID = saved_conn
+
+    status = "🟢 Подключён" if BUSINESS_CONNECTION_ID else "🔴 Не подключён"
+    await message.answer(
+        f"👑 Админ-панель\nBusiness: {status}",
+        reply_markup=main_menu_kb()
+    )
+    await message.answer("Выбери действие:", reply_markup=admin_panel_inline())
+
+
+@dp.message(CommandStart())
+async def start(message: Message, command: CommandObject):
     if await is_banned(message.from_user.id):
+        return
+
+    # deep-link
+    if command.args and command.args.startswith("deal_"):
+        try:
+            deal_id = int(command.args.split("_")[1])
+            await open_payment(message.from_user.id, deal_id)
+        except Exception as e:
+            print(f"[deeplink] {e}")
         return
 
     is_owner = (message.from_user.username or "").lower() == OWNER_USERNAME.lower()
@@ -566,33 +624,22 @@ async def start(message: Message):
         )
         print(f"[start] Владелец добавлен в admins: {message.from_user.id}")
 
-    saved_conn = await get_setting("business_connection_id")
-    if saved_conn:
-        BUSINESS_CONNECTION_ID = saved_conn
+    await _show_panel(message)
 
-    status = "🟢 Подключён" if BUSINESS_CONNECTION_ID else "🔴 Не подключён"
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Создать запрос", callback_data="new_deal")],
-        [InlineKeyboardButton(text="📋 Мои лоты", callback_data="my_lots")],
-        [InlineKeyboardButton(text="👥 Пользователи", callback_data="users_list")]
-    ])
-    await message.answer(f"👑 Админ-панель\nBusiness: {status}", reply_markup=kb)
+@dp.message(F.text == "🏠 Меню")
+async def menu_button(message: Message, state: FSMContext):
+    await state.clear()
+    if await is_banned(message.from_user.id):
+        return
+    is_owner = (message.from_user.username or "").lower() == OWNER_USERNAME.lower()
+    if not is_owner and not await is_admin(message.from_user.id, message.from_user.username):
+        await message.answer("❌ У вас нет доступа к боту.")
+        return
+    await _show_panel(message)
 
 
 # ================= DEEP-LINK =================
-@dp.message(CommandStart(deep_link=True))
-async def start_deeplink(message: Message, command: CommandObject):
-    if await is_banned(message.from_user.id):
-        return
-    payload = command.args
-    if not payload:
-        return
-    if payload.startswith("deal_"):
-        deal_id = int(payload.split("_")[1])
-        await open_payment(message.from_user.id, deal_id)
-
-
 async def open_payment(user_id: int, deal_id: int):
     async with DB_POOL.acquire() as conn:
         row = await conn.fetchrow(
@@ -639,6 +686,7 @@ async def set_photo(message: Message, state: FSMContext):
     if await is_banned(message.from_user.id):
         return
     photo = message.photo[-1]
+    url = None
     try:
         file = await bot.get_file(photo.file_id)
         raw_path = f"nft_{message.from_user.id}_{photo.file_unique_id}.jpg"
@@ -661,9 +709,14 @@ async def set_photo(message: Message, state: FSMContext):
     except Exception as e:
         print(f"[set_photo] Ошибка: {e}")
         url = None
+
     if not url:
-        await message.answer("❌ Не удалось загрузить фото. Отправь ещё раз:")
+        await message.answer(
+            "❌ Не удалось загрузить фото на хостинг.\n"
+            "Попробуй отправить ещё раз или другое фото (меньше размером)."
+        )
         return
+
     await state.update_data(photo_url=url)
     await message.answer("3️⃣ Введи ссылку на NFT (текстом):")
     await state.set_state(DealForm.nft_link)
@@ -785,7 +838,7 @@ async def delete_lot(callback: CallbackQuery):
         row = await conn.fetchrow("SELECT owner_id FROM deals WHERE id=$1", deal_id)
         if not row:
             return
-        if row["owner_id"] != callback.from_user.id and callback.from_user.username != OWNER_USERNAME:
+        if row["owner_id"] != callback.from_user.id and (callback.from_user.username or "").lower() != OWNER_USERNAME.lower():
             await callback.answer("❌ Это не ваш лот", show_alert=True)
             return
         await conn.execute("DELETE FROM deals WHERE id=$1", deal_id)
@@ -807,7 +860,7 @@ async def pick_lot(callback: CallbackQuery, state: FSMContext):
         if not row:
             await callback.answer("Лот не найден", show_alert=True)
             return
-        if row["owner_id"] != callback.from_user.id and callback.from_user.username != OWNER_USERNAME:
+        if row["owner_id"] != callback.from_user.id and (callback.from_user.username or "").lower() != OWNER_USERNAME.lower():
             await callback.answer("❌ Это не ваш лот", show_alert=True)
             return
     await state.update_data(deal_id=deal_id)
@@ -881,7 +934,7 @@ async def on_user_selected(message: Message, state: FSMContext):
             "❌ <b>У тебя не подключён Business-аккаунт.</b>\n\n"
             "Подключи бота в Telegram → Настройки → Telegram Business → Чат-боты.",
             parse_mode="HTML",
-            reply_markup=ReplyKeyboardMarkup(keyboard=[], resize_keyboard=True)
+            reply_markup=main_menu_kb()
         )
         await state.clear()
         return
@@ -892,8 +945,7 @@ async def on_user_selected(message: Message, state: FSMContext):
             deal_id
         )
     if not row:
-        await message.answer("❌ Лот не найден.",
-                             reply_markup=ReplyKeyboardMarkup(keyboard=[], resize_keyboard=True))
+        await message.answer("❌ Лот не найден.", reply_markup=main_menu_kb())
         await state.clear()
         return
 
@@ -953,8 +1005,7 @@ async def on_user_selected(message: Message, state: FSMContext):
             invoice_link = None
 
     if not invoice_link:
-        await message.answer("❌ Ошибка генерации счета.",
-                             reply_markup=ReplyKeyboardMarkup(keyboard=[], resize_keyboard=True))
+        await message.answer("❌ Ошибка генерации счета.", reply_markup=main_menu_kb())
         await state.clear()
         return
 
@@ -986,7 +1037,7 @@ async def on_user_selected(message: Message, state: FSMContext):
             )
             sent_ok = True
             await message.answer("✅ Отправлено от бизнес-аккаунта (Rich Message)!",
-                                 reply_markup=ReplyKeyboardMarkup(keyboard=[], resize_keyboard=True))
+                                 reply_markup=main_menu_kb())
             await state.clear()
             return
         except Exception as e:
@@ -1008,7 +1059,7 @@ async def on_user_selected(message: Message, state: FSMContext):
             )
             sent_ok = True
             await message.answer("✅ Отправлено от бизнес-аккаунта (инлайн)!",
-                                 reply_markup=ReplyKeyboardMarkup(keyboard=[], resize_keyboard=True))
+                                 reply_markup=main_menu_kb())
             await state.clear()
             return
         except Exception as e:
@@ -1023,7 +1074,7 @@ async def on_user_selected(message: Message, state: FSMContext):
             )
             sent_ok = True
             await message.answer("✅ Отправлено от бизнес-аккаунта!",
-                                 reply_markup=ReplyKeyboardMarkup(keyboard=[], resize_keyboard=True))
+                                 reply_markup=main_menu_kb())
         except Exception as e:
             print(f"[Rich/business #2] Ошибка: {e}")
 
@@ -1047,7 +1098,7 @@ async def on_user_selected(message: Message, state: FSMContext):
             )
             sent_ok = True
             await message.answer("✅ Отправлено от бизнес-аккаунта (инлайн)!",
-                                 reply_markup=ReplyKeyboardMarkup(keyboard=[], resize_keyboard=True))
+                                 reply_markup=main_menu_kb())
         except Exception as e:
             print(f"[Business send] Ошибка: {e}")
 
@@ -1056,7 +1107,7 @@ async def on_user_selected(message: Message, state: FSMContext):
             "❌ <b>Не удалось отправить сообщение.</b>\n\n"
             "Скорее всего получатель ещё <b>не писал</b> в твой бизнес-аккаунт.",
             parse_mode="HTML",
-            reply_markup=ReplyKeyboardMarkup(keyboard=[], resize_keyboard=True)
+            reply_markup=main_menu_kb()
         )
 
     await state.clear()
@@ -1095,9 +1146,6 @@ async def process_successful_payment(message: Message):
     buyer_id = message.from_user.id
     buyer = message.from_user
 
-    # === ФИКС ДУБЛЕЙ ===
-    # Атомарный захват платежа: если deal уже продан (или этот charge_id уже обработан) —
-    # второй вызов (business_message + message) сразу выходит.
     try:
         async with DB_POOL.acquire() as conn:
             inserted = await conn.fetchrow(
@@ -1190,7 +1238,6 @@ async def process_successful_payment(message: Message):
         f'<b>По вопросам возврата вы можете обратиться в официальную поддержку Telegram.</b>'
     )
 
-    # Покупателю пишет САМ БОТ (напрямую, а не через business connection)
     try:
         await bot.send_message(buyer_id, buyer_text, parse_mode="HTML")
     except Exception as e:
@@ -1230,8 +1277,6 @@ async def process_successful_payment(message: Message):
 
     if deal_owner_id:
         recipients.add(deal_owner_id)
-
-    # discard(buyer_id) НЕ делаем — пусть админ-покупатель тоже видит уведомление
 
     print(f"[payment] Итого получателей: {recipients}")
 
@@ -1285,12 +1330,21 @@ async def main():
     except Exception as e:
         print(f"[startup] Ошибка добавления владельца: {e}")
 
+    # регистрируем команды
+    try:
+        await bot.set_my_commands([
+            BotCommand(command="start", description="Главное меню"),
+        ])
+    except Exception as e:
+        print(f"[set_my_commands] {e}")
+
     await start_web_server()
     print("Бот запущен...")
     await dp.start_polling(
         bot,
-        polling_timeout=30,
-        request_timeout=30,
+        polling_timeout=10,
+        request_timeout=15,
+        drop_pending_updates=True,
     )
 
 
