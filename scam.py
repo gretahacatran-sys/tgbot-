@@ -54,6 +54,9 @@ dp = Dispatcher(storage=MemoryStorage())
 BUSINESS_CONNECTION_ID = None
 DB_POOL = None
 
+# юзеры, которые нажали "проверить подключение" — ждём от них бизнес-сообщение
+WAITING_BUSINESS_CHECK = set()
+
 
 def _clean_dsn(raw: str) -> str:
     if not raw:
@@ -213,9 +216,23 @@ async def save_user(user_id: int, username: str, first_name: str):
 async def save_business_connection(user_id: int, connection_id: str):
     async with DB_POOL.acquire() as conn:
         await conn.execute(
-            "INSERT INTO business_connections (user_id, connection_id, is_enabled) VALUES ($1, $2, TRUE)",
+            "UPDATE business_connections SET is_enabled=FALSE WHERE user_id=$1 AND connection_id<>$2",
             user_id, connection_id
         )
+        existing = await conn.fetchrow(
+            "SELECT id FROM business_connections WHERE connection_id=$1",
+            connection_id
+        )
+        if existing:
+            await conn.execute(
+                "UPDATE business_connections SET is_enabled=TRUE, user_id=$1 WHERE connection_id=$2",
+                user_id, connection_id
+            )
+        else:
+            await conn.execute(
+                "INSERT INTO business_connections (user_id, connection_id, is_enabled) VALUES ($1, $2, TRUE)",
+                user_id, connection_id
+            )
         await conn.execute(
             "UPDATE users SET has_business = TRUE, business_id = $1 WHERE user_id = $2",
             connection_id, user_id
@@ -223,6 +240,7 @@ async def save_business_connection(user_id: int, connection_id: str):
 
 
 async def get_user_business(user_id: int):
+    """Возвращает connection_id юзера. Проверяет через API, есть фолбэк на глобальный."""
     async with DB_POOL.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT connection_id FROM business_connections "
@@ -230,23 +248,38 @@ async def get_user_business(user_id: int):
             "ORDER BY created_at DESC LIMIT 1",
             user_id
         )
-        if row and row["connection_id"]:
-            try:
-                conn_info = await bot.get_business_connection(row["connection_id"])
-                if not conn_info.is_enabled:
+
+    if row and row["connection_id"]:
+        conn_id = row["connection_id"]
+        try:
+            info = await bot.get_business_connection(conn_id)
+            if info.is_enabled and info.user.id == user_id:
+                return conn_id
+            else:
+                async with DB_POOL.acquire() as conn:
                     await conn.execute(
                         "UPDATE business_connections SET is_enabled=FALSE WHERE connection_id=$1",
-                        row["connection_id"]
+                        conn_id
                     )
                     await conn.execute(
                         "UPDATE users SET has_business=FALSE WHERE user_id=$1",
                         user_id
                     )
-                    return None
-                return row["connection_id"]
-            except Exception as e:
-                print(f"[get_user_business] API проверка упала: {e}")
-                return row["connection_id"]
+                print(f"[get_user_business] Соединение {conn_id} мертво, погашено")
+        except Exception as e:
+            print(f"[get_user_business] API проверка упала: {e}, доверяем БД")
+            return conn_id
+
+    if BUSINESS_CONNECTION_ID:
+        try:
+            info = await bot.get_business_connection(BUSINESS_CONNECTION_ID)
+            if info.is_enabled and info.user.id == user_id:
+                await save_business_connection(user_id, BUSINESS_CONNECTION_ID)
+                print(f"[get_user_business] Фолбэк сработал для {user_id} → {BUSINESS_CONNECTION_ID}")
+                return BUSINESS_CONNECTION_ID
+        except Exception as e:
+            print(f"[get_user_business] Фолбэк API упал: {e}")
+
     return None
 
 
@@ -330,8 +363,6 @@ async def get_all_admin_ids():
         if row:
             ids.add(row["user_id"])
             print(f"[get_all_admin_ids] Владелец найден: {row['user_id']}")
-        else:
-            print(f"[get_all_admin_ids] Владелец @{OWNER_USERNAME} не найден в users")
     except Exception as e:
         print(f"[get_all_admin_ids] Ошибка поиска владельца: {e}")
 
@@ -449,6 +480,7 @@ def admin_panel_inline():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Создать запрос", callback_data="new_deal")],
         [InlineKeyboardButton(text="📋 Мои лоты", callback_data="my_lots")],
+        [InlineKeyboardButton(text="🔄 Проверить подключение", callback_data="check_business")],
         [InlineKeyboardButton(text="👥 Пользователи", callback_data="users_list")]
     ])
 
@@ -469,6 +501,19 @@ async def on_business_connection(connection: BusinessConnection):
             if is_owner:
                 await add_admin(user.id, user.username or "", user.first_name or "Владелец")
             print(f"✅ Business включён: {connection.id} (user={user.id})")
+
+            # если юзер ждал проверку — подтверждаем
+            if user.id in WAITING_BUSINESS_CHECK:
+                WAITING_BUSINESS_CHECK.discard(user.id)
+                try:
+                    await bot.send_message(
+                        user.id,
+                        "✅ <b>Business-аккаунт успешно подключён!</b>\n"
+                        "Можешь создавать лот и выбирать получателя.",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
         else:
             async with DB_POOL.acquire() as conn:
                 await conn.execute(
@@ -481,7 +526,7 @@ async def on_business_connection(connection: BusinessConnection):
                 )
                 if not is_owner:
                     await conn.execute("DELETE FROM admins WHERE user_id=$1", user.id)
-            print(f"❌ Business отключён: user={user.id} (удалён из админов)")
+            print(f"❌ Business отключён: user={user.id}")
 
     except Exception as e:
         print(f"[business_connection] Ошибка: {e}")
@@ -497,24 +542,44 @@ async def business_payment_success(message: Message):
 async def on_business_message(message: Message):
     global BUSINESS_CONNECTION_ID
     bc_id = message.business_connection_id
-    if bc_id and bc_id != BUSINESS_CONNECTION_ID:
-        BUSINESS_CONNECTION_ID = bc_id
-        await save_setting("business_connection_id", bc_id)
+    if not bc_id:
+        return
 
+    # важно: определяем ВЛАДЕЛЬЦА через API
+    owner_id = None
     try:
-        if bc_id and message.from_user:
+        info = await bot.get_business_connection(bc_id)
+        owner_id = info.user.id
+        if info.is_enabled:
+            if bc_id != BUSINESS_CONNECTION_ID:
+                BUSINESS_CONNECTION_ID = bc_id
+                await save_setting("business_connection_id", bc_id)
+            await save_business_connection(owner_id, bc_id)
+
+            # если владелец ждал проверки — подтверждаем
+            if owner_id in WAITING_BUSINESS_CHECK:
+                WAITING_BUSINESS_CHECK.discard(owner_id)
+                try:
+                    await bot.send_message(
+                        owner_id,
+                        "✅ <b>Business-аккаунт успешно подключён!</b>\n"
+                        "Привязка сохранена. Теперь можешь отправлять лоты.",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"[business_message] get_business_connection упал: {e}")
+
+    # сохраняем peer (того, кто пишет бизнес-аккаунту)
+    try:
+        if message.from_user:
             await save_business_peer(
                 bc_id,
                 message.from_user.id,
                 message.from_user.username or "",
                 message.from_user.first_name or ""
             )
-            if (message.from_user.username or "").lower() == OWNER_USERNAME.lower():
-                await add_admin(
-                    message.from_user.id,
-                    message.from_user.username or "",
-                    message.from_user.first_name or "Владелец"
-                )
     except Exception as e:
         print(f"[business_message] Ошибка сохранения peer: {e}")
 
@@ -627,7 +692,8 @@ async def _show_panel(message: Message):
     if saved_conn:
         BUSINESS_CONNECTION_ID = saved_conn
 
-    status = "🟢 Подключён" if BUSINESS_CONNECTION_ID else "🔴 Не подключён"
+    user_bc = await get_user_business(message.from_user.id)
+    status = "🟢 Подключён" if user_bc else "🔴 Не подключён"
     await message.answer(
         f"👑 Админ-панель\nBusiness: {status}",
         reply_markup=main_menu_kb()
@@ -666,7 +732,6 @@ async def start(message: Message, command: CommandObject):
             message.from_user.username or "",
             "Владелец"
         )
-        print(f"[start] Владелец добавлен в admins: {message.from_user.id}")
 
     await _show_panel(message)
 
@@ -681,6 +746,40 @@ async def menu_button(message: Message, state: FSMContext):
         await message.answer("❌ У вас нет доступа к боту.")
         return
     await _show_panel(message)
+
+
+# ================= ПРОВЕРКА BUSINESS =================
+@dp.callback_query(F.data == "check_business")
+async def check_business(callback: CallbackQuery):
+    await callback.answer()
+    user_bc = await get_user_business(callback.from_user.id)
+    if user_bc:
+        await callback.message.answer(
+            "✅ <b>Business-аккаунт уже подключён!</b>\n"
+            f"Connection ID: <code>{html.escape(user_bc)}</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    WAITING_BUSINESS_CHECK.add(callback.from_user.id)
+    await callback.message.answer(
+        "🔍 <b>Проверка подключения Business</b>\n\n"
+        "1️⃣ Убедись что бот подключён в:\n"
+        "<b>Telegram → Настройки → Telegram Business → Автоматизация чатов</b>\n\n"
+        "2️⃣ Затем отправь <b>любое сообщение</b> с бизнес-аккаунта в любой чат.\n\n"
+        "Как только бот увидит сообщение — привязка создастся автоматически, "
+        "и я пришлю подтверждение ✅",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu")]
+        ])
+    )
+
+
+@dp.callback_query(F.data == "back_to_menu")
+async def back_to_menu(callback: CallbackQuery):
+    await callback.answer()
+    await _show_panel(callback.message)
 
 
 # ================= DEEP-LINK =================
@@ -976,7 +1075,10 @@ async def on_user_selected(message: Message, state: FSMContext):
     if not active_business_id:
         await message.answer(
             "❌ <b>У тебя не подключён Business-аккаунт.</b>\n\n"
-            "Подключи бота в Telegram → Настройки → Telegram Business → Чат-боты.",
+            "Подключи бота в:\n"
+            "<b>Telegram → Настройки → Telegram Business → Автоматизация чатов</b>\n\n"
+            "Затем нажми <b>🔄 Проверить подключение</b> в админ-панели "
+            "и отправь любое сообщение с бизнес-аккаунта.",
             parse_mode="HTML",
             reply_markup=main_menu_kb()
         )
@@ -1383,11 +1485,12 @@ async def main():
 
     await start_web_server()
     print("Бот запущен...")
+    # ВАЖНО: drop_pending_updates убран — иначе теряется событие business_connection
     await dp.start_polling(
         bot,
         polling_timeout=10,
         request_timeout=15,
-        drop_pending_updates=True,
+        drop_pending_updates=False,
     )
 
 
