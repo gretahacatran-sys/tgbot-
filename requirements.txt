@@ -1,0 +1,10 @@
+aiogram>=3.25.0
+aiohttp>=3.9.0
+psycopg2-binary
+google-genai
+SpeechRecognition==3.10.4
+pydub
+requests
+telethon
+asyncpg==0.31.0
+Pillow
