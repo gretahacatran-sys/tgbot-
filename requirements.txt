@@ -8,3 +8,4 @@ requests
 telethon
 asyncpg==0.31.0
 Pillow
+pip install pyTelegramBotAPI
