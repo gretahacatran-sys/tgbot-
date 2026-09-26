@@ -39,11 +39,18 @@ CLAN_CREATE_COST = 100000
 CLAN_SLOT_COST = 5000
 CLAN_BASE_SLOTS = 5
 CLAN_EMOJI_PER_PAGE = 20
-
 QUICK_BONUS_INTERVAL = 10 * 60
 QUICK_BONUS_AMOUNT = 500
-
 BOT_ID_CACHE = {'id': None}
+
+
+def _safe_int(x):
+    if x is None:
+        return 0
+    try:
+        return int(x)
+    except Exception:
+        return 0
 
 
 def get_bot_id():
@@ -112,7 +119,6 @@ EMO_CHAT = '<tg-emoji emoji-id="5235814241927181048">💬</tg-emoji>'
 EMO_VS = '<tg-emoji emoji-id="5354932922203782306">⚔️</tg-emoji>'
 EMO_CLAN = '<tg-emoji emoji-id="5285423837205260312">🎟</tg-emoji>'
 EMO_CLAN_HEADER = '<tg-emoji emoji-id="5224575413253274698">🏰</tg-emoji>'
-
 EMO_DIV_SOLO = '<tg-emoji emoji-id="5226554936682100372">➖</tg-emoji>'
 EMO_DIV_PVP = '<tg-emoji emoji-id="5318883801399567148">➖</tg-emoji>'
 DIV_SOLO_LINE = (EMO_DIV_SOLO + ' ') * 12
@@ -148,7 +154,7 @@ ICO_MINE = '5276032951342088188'
 ICO_CHAT = '5235814241927181048'
 ICO_TTT_X = '5438194320685414000'
 ICO_TTT_O = '5393109606597685796'
-ICO_TTT_INVITE = '5359419191638114278'
+ICO_TTT_INVITE = '5359419419191638114278'
 ICO_FLOOR = '5213071346417812800'
 ICO_SLOTS = '5384509325429463744'
 ICO_BONUS_ICO = '5321280470460145769'
@@ -162,7 +168,6 @@ ICO_VS = '5354932922203782306'
 ICO_CLAN_HEADER = '5224575413253274698'
 
 SLOT_EMOJI_MAP = {'🍒': EMO_CHERRY, '🍋': EMO_LEMON, '🍊': EMO_ORANGE, '💎': EMO_DIAMOND}
-
 TG_EMOJI_RE = re.compile(r'<tg-emoji emoji-id="[^"]*">([^<]*)</tg-emoji>')
 
 
@@ -298,8 +303,46 @@ def safe_answer(call_id, text=None, show_alert=False):
         pass
 
 
-def get_db_connection():
+# ============ ПОСТОЯННОЕ СОЕДИНЕНИЕ С БД (быстро!) ============
+_global_conn = None
+_conn_lock = threading.Lock()
+
+
+class _ConnWrap:
+    __slots__ = ('_real',)
+    def __init__(self, real):
+        self._real = real
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+    def close(self):
+        pass
+    @property
+    def closed(self):
+        return self._real.closed
+
+
+def _new_conn():
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+
+
+def get_db_connection():
+    global _global_conn
+    with _conn_lock:
+        if _global_conn is None or _global_conn.closed:
+            _global_conn = _new_conn()
+        else:
+            try:
+                c = _global_conn.cursor()
+                c.execute("SELECT 1")
+                c.close()
+            except Exception:
+                try:
+                    _global_conn.close()
+                except Exception:
+                    pass
+                _global_conn = _new_conn()
+    return _ConnWrap(_global_conn)
+# ================================================================
 
 
 def _get_columns(cursor, table):
@@ -371,7 +414,6 @@ def init_db():
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-
         try:
             cursor.execute("""
                 SELECT table_name, column_name FROM information_schema.columns
@@ -383,20 +425,17 @@ def init_db():
             for r in cursor.fetchall():
                 try:
                     cursor.execute(f'ALTER TABLE "{r["table_name"]}" ALTER COLUMN "{r["column_name"]}" TYPE BIGINT')
-                    print(f"[MIGRATION] {r['table_name']}.{r['column_name']} -> BIGINT")
-                except Exception as e:
-                    print(f"[MIGRATION FAIL] {e}")
+                except Exception:
                     try:
                         cursor.connection.rollback()
                     except Exception:
                         pass
             conn.commit()
-        except Exception as e:
+        except Exception:
             try:
                 conn.rollback()
             except Exception:
                 pass
-            print(f"[MIGRATION skip] {e}")
 
         clans_cols = _get_columns(cursor, 'clans')
         if clans_cols and 'id' not in clans_cols:
@@ -412,17 +451,7 @@ def init_db():
             cursor.execute('DROP TABLE IF EXISTS clan_emojis')
         conn.commit()
 
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                user_id BIGINT PRIMARY KEY,
-                username TEXT,
-                first_name TEXT,
-                balance BIGINT DEFAULT 2000,
-                last_bonus INTEGER DEFAULT 0,
-                current_streak INTEGER DEFAULT 0,
-                max_streak INTEGER DEFAULT 0
-            )
-        ''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, username TEXT, first_name TEXT, balance BIGINT DEFAULT 2000, last_bonus INTEGER DEFAULT 0, current_streak INTEGER DEFAULT 0, max_streak INTEGER DEFAULT 0)''')
         existing = _get_columns(cursor, 'users')
         if 'banned' not in existing:
             cursor.execute('ALTER TABLE users ADD COLUMN banned INTEGER DEFAULT 0')
@@ -450,7 +479,6 @@ def init_db():
         cursor.execute('''CREATE TABLE IF NOT EXISTS clan_crowns (id SERIAL PRIMARY KEY, emoji_id TEXT UNIQUE, fallback TEXT)''')
         conn.commit()
 
-        print("[MIGRATION] проверка constraints...")
         _ensure_constraint(cursor, 'users', ['user_id'], 'pk')
         _ensure_constraint(cursor, 'moderators', ['user_id'], 'pk')
         _ensure_constraint(cursor, 'chats', ['chat_id'], 'pk')
@@ -469,14 +497,23 @@ def init_db():
             cursor.execute("INSERT INTO moderators (user_id, role, added_by) VALUES (%s, 'owner', %s) ON CONFLICT (user_id) DO NOTHING", (OWNER_ID, OWNER_ID))
             conn.commit()
         except Exception as e:
-            print(f"[OWNER INSERT FAIL] {e}")
+            print(f"[OWNER INSERT] {e}")
             try:
                 conn.rollback()
             except Exception:
                 pass
-
-        cursor.close()
-        conn.close()
+        # NULL-sanitize
+        try:
+            cursor.execute('UPDATE users SET balance = 0 WHERE balance IS NULL')
+            cursor.execute('UPDATE users SET current_streak = 0 WHERE current_streak IS NULL')
+            cursor.execute('UPDATE users SET max_streak = 0 WHERE max_streak IS NULL')
+            cursor.execute('UPDATE users SET banned = 0 WHERE banned IS NULL')
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         print("[MIGRATION] init_db завершён")
 
 
@@ -484,7 +521,7 @@ def get_user_clan(user_id):
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('''SELECT c.id, c.name, c.emoji_id, c.emoji_fallback, c.leader_crown_id, c.leader_crown_fallback, c.leader_id, c.treasury, c.max_members FROM clans c JOIN clan_members m ON c.id = m.clan_id WHERE m.user_id = %s''', (user_id,))
-        row = cursor.fetchone(); cursor.close(); conn.close()
+        row = cursor.fetchone(); cursor.close()
         return dict(row) if row else None
 
 
@@ -492,7 +529,7 @@ def get_clan_by_id(clan_id):
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('SELECT * FROM clans WHERE id = %s', (clan_id,))
-        row = cursor.fetchone(); cursor.close(); conn.close()
+        row = cursor.fetchone(); cursor.close()
         return dict(row) if row else None
 
 
@@ -500,7 +537,7 @@ def get_clan_by_name(name):
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('SELECT * FROM clans WHERE LOWER(name) = LOWER(%s)', (name,))
-        row = cursor.fetchone(); cursor.close(); conn.close()
+        row = cursor.fetchone(); cursor.close()
         return dict(row) if row else None
 
 
@@ -508,7 +545,7 @@ def get_clan_members(clan_id):
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('SELECT user_id FROM clan_members WHERE clan_id = %s ORDER BY joined_at', (clan_id,))
-        rows = cursor.fetchall(); cursor.close(); conn.close()
+        rows = cursor.fetchall(); cursor.close()
         return [dict(r) for r in rows]
 
 
@@ -516,7 +553,7 @@ def get_clan_member_count(clan_id):
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('SELECT COUNT(*) AS c FROM clan_members WHERE clan_id = %s', (clan_id,))
-        row = cursor.fetchone(); cursor.close(); conn.close()
+        row = cursor.fetchone(); cursor.close()
         return row['c'] if row else 0
 
 
@@ -524,7 +561,7 @@ def get_all_clans():
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('SELECT * FROM clans ORDER BY created_at ASC')
-        rows = cursor.fetchall(); cursor.close(); conn.close()
+        rows = cursor.fetchall(); cursor.close()
         return [dict(r) for r in rows]
 
 
@@ -532,7 +569,7 @@ def search_clans(query):
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('SELECT * FROM clans WHERE LOWER(name) LIKE LOWER(%s) ORDER BY name', (f'%{query}%',))
-        rows = cursor.fetchall(); cursor.close(); conn.close()
+        rows = cursor.fetchall(); cursor.close()
         return [dict(r) for r in rows]
 
 
@@ -542,7 +579,7 @@ def create_clan(name, emoji_id, emoji_fallback, crown_id, crown_fallback, leader
         cursor.execute('''INSERT INTO clans (name, emoji_id, emoji_fallback, leader_crown_id, leader_crown_fallback, leader_id, max_members) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id''', (name, emoji_id, emoji_fallback, crown_id, crown_fallback, leader_id, CLAN_BASE_SLOTS))
         clan_id = cursor.fetchone()['id']
         cursor.execute('INSERT INTO clan_members (clan_id, user_id) VALUES (%s, %s)', (clan_id, leader_id))
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit(); cursor.close()
         return clan_id
 
 
@@ -552,35 +589,35 @@ def delete_clan(clan_id):
         cursor.execute('DELETE FROM clan_members WHERE clan_id = %s', (clan_id,))
         cursor.execute('DELETE FROM clan_requests WHERE clan_id = %s', (clan_id,))
         cursor.execute('DELETE FROM clans WHERE id = %s', (clan_id,))
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit(); cursor.close()
 
 
 def add_clan_member(clan_id, user_id):
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('INSERT INTO clan_members (clan_id, user_id) VALUES (%s, %s) ON CONFLICT DO NOTHING', (clan_id, user_id))
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit(); cursor.close()
 
 
 def remove_clan_member(user_id):
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('DELETE FROM clan_members WHERE user_id = %s', (user_id,))
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit(); cursor.close()
 
 
 def expand_clan(clan_id):
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('UPDATE clans SET max_members = max_members + 1 WHERE id = %s', (clan_id,))
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit(); cursor.close()
 
 
 def transfer_clan(clan_id, new_leader_id):
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('UPDATE clans SET leader_id = %s WHERE id = %s', (new_leader_id, clan_id))
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit(); cursor.close()
 
 
 def add_clan_request(clan_id, user_id):
@@ -588,23 +625,23 @@ def add_clan_request(clan_id, user_id):
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('SELECT 1 FROM clan_requests WHERE clan_id = %s AND user_id = %s', (clan_id, user_id))
         if cursor.fetchone():
-            cursor.close(); conn.close(); return False
+            cursor.close(); return False
         cursor.execute('INSERT INTO clan_requests (clan_id, user_id) VALUES (%s, %s)', (clan_id, user_id))
-        conn.commit(); cursor.close(); conn.close(); return True
+        conn.commit(); cursor.close(); return True
 
 
 def remove_clan_request(clan_id, user_id):
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('DELETE FROM clan_requests WHERE clan_id = %s AND user_id = %s', (clan_id, user_id))
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit(); cursor.close()
 
 
 def get_clan_emojis():
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('SELECT id, emoji_id, fallback FROM clan_emojis ORDER BY id DESC')
-        rows = cursor.fetchall(); cursor.close(); conn.close()
+        rows = cursor.fetchall(); cursor.close()
         return [dict(r) for r in rows]
 
 
@@ -617,21 +654,21 @@ def add_clan_emoji(emoji_id, fallback):
         except Exception:
             conn.rollback(); return False
         finally:
-            cursor.close(); conn.close()
+            cursor.close()
 
 
 def clear_clan_emojis():
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('DELETE FROM clan_emojis')
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit(); cursor.close()
 
 
 def get_clan_crowns():
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('SELECT id, emoji_id, fallback FROM clan_crowns ORDER BY id DESC')
-        rows = cursor.fetchall(); cursor.close(); conn.close()
+        rows = cursor.fetchall(); cursor.close()
         return [dict(r) for r in rows]
 
 
@@ -644,14 +681,14 @@ def add_clan_crown(emoji_id, fallback):
         except Exception:
             conn.rollback(); return False
         finally:
-            cursor.close(); conn.close()
+            cursor.close()
 
 
 def clear_clan_crowns():
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('DELETE FROM clan_crowns')
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit(); cursor.close()
 
 
 def render_clan_name(clan):
@@ -677,7 +714,7 @@ def get_clean_name(user_id):
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('SELECT first_name, username FROM users WHERE user_id = %s', (user_id,))
-        row = cursor.fetchone(); cursor.close(); conn.close()
+        row = cursor.fetchone(); cursor.close()
         if row:
             name = (row['first_name'] or '').strip() or (row['username'] or '').strip()
             if name:
@@ -712,7 +749,7 @@ def get_user_display(user):
             with db_lock:
                 conn = get_db_connection(); cursor = conn.cursor()
                 cursor.execute('SELECT first_name, username FROM users WHERE user_id = %s', (user_id,))
-                row = cursor.fetchone(); cursor.close(); conn.close()
+                row = cursor.fetchone(); cursor.close()
                 if row:
                     name = (row['first_name'] or '').strip() or (row['username'] or '').strip()
         if not name:
@@ -756,7 +793,7 @@ def get_or_create_user(user_id, username, first_name):
             conn.commit()
             cursor.execute('SELECT * FROM users WHERE user_id = %s', (user_id,))
             user = cursor.fetchone()
-        cursor.close(); conn.close()
+        cursor.close()
         return user
 
 
@@ -764,7 +801,7 @@ def is_banned(user_id):
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('SELECT banned FROM users WHERE user_id = %s', (user_id,))
-        row = cursor.fetchone(); cursor.close(); conn.close()
+        row = cursor.fetchone(); cursor.close()
         return row and row['banned'] == 1
 
 
@@ -772,7 +809,7 @@ def get_all_users():
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('SELECT user_id, username, first_name, balance FROM users ORDER BY balance DESC')
-        rows = cursor.fetchall(); cursor.close(); conn.close()
+        rows = cursor.fetchall(); cursor.close()
         return rows
 
 
@@ -780,7 +817,7 @@ def get_all_chats():
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('SELECT chat_id, chat_title, sub_required FROM chats')
-        rows = cursor.fetchall(); cursor.close(); conn.close()
+        rows = cursor.fetchall(); cursor.close()
         return rows
 
 
@@ -789,21 +826,21 @@ def add_chat(chat_id, title):
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('INSERT INTO chats (chat_id, chat_title) VALUES (%s, %s) ON CONFLICT (chat_id) DO NOTHING', (chat_id, title))
         cursor.execute('UPDATE chats SET chat_title = %s WHERE chat_id = %s', (title, chat_id))
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit(); cursor.close()
 
 
 def update_balance(user_id, amount):
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('UPDATE users SET balance = balance + %s WHERE user_id = %s', (amount, user_id))
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit(); cursor.close()
 
 
 def set_balance(user_id, amount):
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('UPDATE users SET balance = %s WHERE user_id = %s', (amount, user_id))
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit(); cursor.close()
 
 
 def update_game_stats(user_id, game_type, is_win):
@@ -813,7 +850,7 @@ def update_game_stats(user_id, game_type, is_win):
             cursor.execute('UPDATE game_stats SET wins = wins + 1 WHERE user_id = %s AND game_type = %s', (user_id, game_type))
         else:
             cursor.execute('UPDATE game_stats SET losses = losses + 1 WHERE user_id = %s AND game_type = %s', (user_id, game_type))
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit(); cursor.close()
 
 
 def get_all_stats(user_id):
@@ -823,13 +860,13 @@ def get_all_stats(user_id):
             cursor.execute('INSERT INTO game_stats (user_id, game_type, wins, losses) VALUES (%s, %s, 0, 0) ON CONFLICT (user_id, game_type) DO NOTHING', (user_id, game))
         conn.commit()
         cursor.execute('SELECT * FROM game_stats WHERE user_id = %s', (user_id,))
-        rows = cursor.fetchall(); cursor.close(); conn.close()
+        rows = cursor.fetchall(); cursor.close()
         stats = {}
-        names = {'dice': f'{EMO_DICE} Кости 1на1', 'rps': f'{EMO_ROCK} Камень-Ножницы-Бумага', 'ttt': f'{EMO_TTT_INVITE} Крестики-Нолики 3х3', 'mines': f'{EMO_MINE} Минное поле 5x5', 'number': f'{EMO_NUMBER} Угадай число'}
+        names = {'dice': f'{EMO_DICE} Кости 1на1', 'rps': f'{EMO_ROCK} КНБ', 'ttt': f'{EMO_TTT_INVITE} Крестики-Нолики', 'mines': f'{EMO_MINE} Минное поле', 'number': f'{EMO_NUMBER} Угадай число'}
         for row in rows:
             game = row['game_type']
             if game in names:
-                wins, losses = row['wins'], row['losses']
+                wins, losses = _safe_int(row['wins']), _safe_int(row['losses'])
                 total = wins + losses
                 winrate = 0.0 if total == 0 else round(((wins - losses) / total) * 100, 1)
                 stats[game] = {'name': names[game], 'wins': wins, 'losses': losses, 'winrate': winrate}
@@ -845,8 +882,9 @@ def update_streak(user_id, is_win, stake=0):
         cursor.execute('SELECT current_streak, max_streak FROM users WHERE user_id = %s', (user_id,))
         res = cursor.fetchone()
         if not res:
-            cursor.close(); conn.close(); return
-        current, maximum = res['current_streak'], res['max_streak']
+            cursor.close(); return
+        current = _safe_int(res['current_streak'])
+        maximum = _safe_int(res['max_streak'])
         if is_win:
             if stake >= 1000:
                 current += 1
@@ -855,7 +893,7 @@ def update_streak(user_id, is_win, stake=0):
         else:
             current = 0
         cursor.execute('UPDATE users SET current_streak = %s, max_streak = %s WHERE user_id = %s', (current, maximum, user_id))
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit(); cursor.close()
 
 
 def check_banned(user_id, chat_id):
@@ -879,7 +917,7 @@ def get_moscow_date():
 
 
 def get_quick_bonus_remaining(user):
-    if not user['last_quick_bonus']:
+    if not user.get('last_quick_bonus'):
         return 0
     try:
         last = datetime.datetime.fromisoformat(user['last_quick_bonus'])
@@ -900,14 +938,15 @@ def format_time(seconds):
 
 def build_balance_text(user):
     display = get_user_display(user)
-    return f"{display}\n{EMO_NOX} <code>{user['balance']:,}</code> ноксов"
+    bal = _safe_int(user.get('balance'))
+    return f"{display}\n{EMO_NOX} <code>{bal:,}</code> ноксов"
 
 
 def get_required_subscriptions():
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('SELECT id, chat_id, type, link, title FROM required_subscriptions')
-        rows = cursor.fetchall(); cursor.close(); conn.close()
+        rows = cursor.fetchall(); cursor.close()
         return [dict(row) for row in rows]
 
 
@@ -917,16 +956,16 @@ def add_required_subscription(chat_id, type_, link, title):
         try:
             bot.get_chat(chat_id)
         except Exception as e:
-            cursor.close(); conn.close()
+            cursor.close()
             raise Exception(f"Не удалось: {e}")
         try:
             cursor.execute('INSERT INTO required_subscriptions (chat_id, type, link, title) VALUES (%s, %s, %s, %s) ON CONFLICT (chat_id) DO NOTHING', (chat_id, type_, link, title))
             cursor.execute('DELETE FROM user_subscriptions WHERE chat_id = %s', (chat_id,))
             conn.commit()
         except Exception as e:
-            conn.rollback(); cursor.close(); conn.close()
+            conn.rollback(); cursor.close()
             raise Exception(f"Ошибка: {e}")
-        cursor.close(); conn.close()
+        cursor.close()
 
 
 def remove_required_subscription(sub_id):
@@ -941,9 +980,9 @@ def remove_required_subscription(sub_id):
                 cursor.execute('DELETE FROM user_subscriptions WHERE chat_id = %s', (chat_id,))
             conn.commit()
         except Exception as e:
-            conn.rollback(); cursor.close(); conn.close()
+            conn.rollback(); cursor.close()
             raise Exception(f"Ошибка: {e}")
-        cursor.close(); conn.close()
+        cursor.close()
 
 
 def is_user_subscribed_to_channel(user_id, chat_id):
@@ -966,7 +1005,7 @@ def check_required_subscriptions(user_id, chat_id, message_id=None, sender_chat=
         with db_lock:
             conn = get_db_connection(); cursor = conn.cursor()
             cursor.execute('SELECT sub_required FROM chats WHERE chat_id = %s', (chat_id,))
-            row = cursor.fetchone(); cursor.close(); conn.close()
+            row = cursor.fetchone(); cursor.close()
             if not row or row['sub_required'] == 0:
                 return True
     except Exception:
@@ -980,7 +1019,7 @@ def check_required_subscriptions(user_id, chat_id, message_id=None, sender_chat=
             with db_lock:
                 conn = get_db_connection(); cursor = conn.cursor()
                 cursor.execute('INSERT INTO user_subscriptions (user_id, chat_id, confirmed) VALUES (%s, %s, 1) ON CONFLICT (user_id, chat_id) DO UPDATE SET confirmed = 1', (user_id, sub['chat_id']))
-                conn.commit(); cursor.close(); conn.close()
+                conn.commit(); cursor.close()
         else:
             not_confirmed.append(sub)
     if not_confirmed:
@@ -1061,9 +1100,8 @@ def welcome_new_member(message):
         display = get_user_display(user)
         text = (f"{EMO_WELCOME} <b>Добро пожаловать, {display}!</b>\n\n"
                 f"{EMO_BONUS} Стартовый баланс — 2000 ноксов {EMO_NOX}\n\n"
-                f"<b>{EMO_RULES} ПРАВИЛА</b> — <b>правила</b>\n"
-                f"<b>{EMO_DICE} ИГРЫ</b> — <b>игры</b>\n\n"
-                f"{EMO_PROFILE} <code>профиль</code> | {EMO_NOX} <code>б</code> | {EMO_TROPHY} <code>топ богатых</code>")
+                f"{EMO_RULES} <b>правила</b> | {EMO_DICE} <b>игры</b>\n"
+                f"{EMO_PROFILE} <code>профиль</code> | {EMO_NOX} <code>б</code>")
         safe_send(message.chat.id, text, parse_mode='HTML')
 
 
@@ -1076,13 +1114,10 @@ def handle_left_member(message):
                 with db_lock:
                     conn = get_db_connection(); cursor = conn.cursor()
                     cursor.execute('DELETE FROM chats WHERE chat_id = %s', (message.chat.id,))
-                    conn.commit(); cursor.close(); conn.close()
+                    conn.commit(); cursor.close()
             except:
                 pass
         return
-    user_db = get_or_create_user(left_user.id, left_user.username, left_user.first_name)
-    display_name = get_user_display(user_db)
-    safe_send(message.chat.id, f"👋 {display_name} вышел 🤦", parse_mode='HTML')
 
 
 def donate_menu_start(message):
@@ -1090,9 +1125,7 @@ def donate_menu_start(message):
     markup.add(btn("За рубли", callback_data="donate_rubles", style='primary', icon=ICO_RUBLES))
     markup.add(btn("За звёзды", callback_data="donate_stars", style='success', icon=ICO_STARS))
     markup.add(btn("Назад", callback_data="back_to_menu", style='danger', icon=ICO_BACK))
-    text = (f"{EMO_DONATE} <b>ПОПОЛНЕНИЕ</b>\n\n"
-            f"{EMO_RUBLES} 1 ₽ = 400 ноксов, мин 25 000\n"
-            f"{EMO_STARS} 1 ⭐ = 400 ноксов, мин 15")
+    text = f"{EMO_DONATE} <b>ПОПОЛНЕНИЕ</b>\n\n{EMO_RUBLES} 1 ₽ = 400 ноксов, мин 25 000\n{EMO_STARS} 1 ⭐ = 400 ноксов, мин 15"
     try:
         bot.send_photo(message.chat.id, BOT_PHOTO_URL, caption=text, reply_markup=markup, parse_mode='HTML')
     except:
@@ -1137,10 +1170,13 @@ def show_profile(call):
     tl = sum(d['losses'] for d in stats.values())
     tg = tw + tl
     tr = 0.0 if tg == 0 else round((tw / tg) * 100, 1)
+    bal = _safe_int(user.get('balance'))
+    cs = _safe_int(user.get('current_streak'))
+    ms = _safe_int(user.get('max_streak'))
     text = (f"{EMO_PROFILE} <b>ПРОФИЛЬ:</b> {display}\n"
-            f"{EMO_NOX} <b>Баланс:</b> <code>{user['balance']:,}</code>\n"
-            f"{EMO_FIRE} <b>Серия:</b> <code>{user['current_streak']}</code>\n"
-            f"{EMO_TROPHY} <b>Рекорд:</b> <code>{user['max_streak']}</code>\n\n"
+            f"{EMO_NOX} <b>Баланс:</b> <code>{bal:,}</code>\n"
+            f"{EMO_FIRE} <b>Серия:</b> <code>{cs}</code>\n"
+            f"{EMO_TROPHY} <b>Рекорд:</b> <code>{ms}</code>\n\n"
             f"📊 <b>ОБЩАЯ:</b> 🟢 {tw} | 🔴 {tl} | {EMO_MULT} {tr}%\n")
     for gt, d in stats.items():
         text += f"\n<b>{d['name']}</b>\n   🟢 {d['wins']} | 🔴 {d['losses']} | {EMO_MULT} {d['winrate']}%\n"
@@ -1154,8 +1190,7 @@ def show_profile(call):
 def back_to_menu(call):
     user = get_or_create_user(call.from_user.id, call.from_user.username, call.from_user.first_name)
     markup = get_main_menu(user)
-    text = f"✨ NoxHub! Выбери раздел {EMO_DOWN}"
-    safe_edit(call.message.chat.id, call.message.message_id, text, reply_markup=markup, parse_mode='HTML')
+    safe_edit(call.message.chat.id, call.message.message_id, f"✨ NoxHub! Выбери раздел {EMO_DOWN}", reply_markup=markup, parse_mode='HTML')
     safe_answer(call.id)
 
 
@@ -1176,19 +1211,19 @@ def process_promo_redeem(message):
         promo = cursor.fetchone()
         if not promo:
             safe_send(message.chat.id, f"{EMO_CANCEL} Не найден.", parse_mode='HTML')
-            cursor.close(); conn.close(); return
+            cursor.close(); return
         cursor.execute('SELECT * FROM promo_history WHERE code = %s AND user_id = %s', (code, user_id))
         if cursor.fetchone():
             safe_send(message.chat.id, f"{EMO_CANCEL} Уже активирован!", parse_mode='HTML')
-            cursor.close(); conn.close(); return
-        if promo['current_uses'] >= promo['max_uses']:
+            cursor.close(); return
+        if _safe_int(promo['current_uses']) >= _safe_int(promo['max_uses']):
             safe_send(message.chat.id, f"{EMO_CANCEL} Лимит.", parse_mode='HTML')
-            cursor.close(); conn.close(); return
+            cursor.close(); return
         cursor.execute('UPDATE promos SET current_uses = current_uses + 1 WHERE code = %s', (code,))
         cursor.execute('INSERT INTO promo_history (code, user_id) VALUES (%s, %s)', (code, user_id))
-        conn.commit(); cursor.close(); conn.close()
-    update_balance(user_id, promo['reward'])
-    safe_send(message.chat.id, f"{EMO_PROMO} +{promo['reward']:,} ноксов {EMO_NOX}", parse_mode='HTML')
+        conn.commit(); cursor.close()
+    update_balance(user_id, _safe_int(promo['reward']))
+    safe_send(message.chat.id, f"{EMO_PROMO} +{_safe_int(promo['reward']):,} ноксов {EMO_NOX}", parse_mode='HTML')
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "donate_menu")
@@ -1197,8 +1232,7 @@ def donate_menu(call):
     markup.add(btn("За рубли", callback_data="donate_rubles", style='primary', icon=ICO_RUBLES))
     markup.add(btn("За звёзды", callback_data="donate_stars", style='success', icon=ICO_STARS))
     markup.add(btn("Назад", callback_data="back_to_menu", style='danger', icon=ICO_BACK))
-    text = f"{EMO_DONATE} <b>ПОПОЛНЕНИЕ</b>"
-    safe_edit(call.message.chat.id, call.message.message_id, text, reply_markup=markup, parse_mode='HTML')
+    safe_edit(call.message.chat.id, call.message.message_id, f"{EMO_DONATE} <b>ПОПОЛНЕНИЕ</b>", reply_markup=markup, parse_mode='HTML')
     safe_answer(call.id)
 
 
@@ -1207,8 +1241,7 @@ def donate_rubles(call):
     markup = types.InlineKeyboardMarkup()
     markup.add(btn("Ввести сумму", callback_data="donate_input", style='primary', icon=ICO_INPUT))
     markup.add(btn("Назад", callback_data="donate_menu", style='danger', icon=ICO_BACK))
-    text = f"{EMO_RUBLES} 1 ₽ = 400 ноксов {EMO_NOX}\nМинимум: 25 000"
-    safe_edit(call.message.chat.id, call.message.message_id, text, reply_markup=markup, parse_mode='HTML')
+    safe_edit(call.message.chat.id, call.message.message_id, f"{EMO_RUBLES} 1 ₽ = 400 ноксов\nМинимум: 25 000", reply_markup=markup, parse_mode='HTML')
     safe_answer(call.id)
 
 
@@ -1227,7 +1260,7 @@ def process_donate_amount(message):
         if nox < 25000:
             safe_send(message.chat.id, f"{EMO_CANCEL} Минимум 25 000!", parse_mode='HTML'); return
         rub = round(nox / 400, 2)
-        temp_donate[user_id] = {'nox': nox, 'rub': rub, 'type': 'rubles'}
+        temp_donate[user_id] = {'nox': nox, 'rub': rub}
         markup = types.InlineKeyboardMarkup()
         markup.add(btn("Оплатить", callback_data="donate_pay", style='success', icon=ICO_DONATE))
         markup.add(btn("Отмена", callback_data="donate_cancel", style='danger', icon=ICO_CANCEL))
@@ -1243,7 +1276,7 @@ def donate_pay(call):
         safe_answer(call.id, "❌ Устарело", show_alert=True); return
     data = temp_donate.pop(user_id)
     nox = data['nox']; rub = data['rub']
-    text = f"💳 {nox:,} ноксов\n💰 {rub} ₽\n🏦 Карта: <code>{CARD_NUMBER}</code>\n\nПереведи и нажми кнопку"
+    text = f"💳 {nox:,} ноксов\n💰 {rub} ₽\n🏦 Карта: <code>{CARD_NUMBER}</code>\n\nПереведи и нажми"
     owner_text = f"Оплатил {nox:,} ноксов ({rub} ₽)"
     markup = types.InlineKeyboardMarkup()
     markup.add(btn("Я оплатил", url=f"tg://resolve?domain={OWNER_USERNAME}&text={owner_text}", style='success', icon=ICO_DONATE))
@@ -1257,8 +1290,7 @@ def donate_stars(call):
     markup = types.InlineKeyboardMarkup()
     markup.add(btn("Ввести звёзды", callback_data="donate_stars_input", style='primary', icon=ICO_INPUT))
     markup.add(btn("Назад", callback_data="donate_menu", style='danger', icon=ICO_BACK))
-    text = f"{EMO_STARS} 1 ⭐ = 400 ноксов\nМинимум 15"
-    safe_edit(call.message.chat.id, call.message.message_id, text, reply_markup=markup, parse_mode='HTML')
+    safe_edit(call.message.chat.id, call.message.message_id, f"{EMO_STARS} 1 ⭐ = 400 ноксов\nМинимум 15", reply_markup=markup, parse_mode='HTML')
     safe_answer(call.id)
 
 
@@ -1277,7 +1309,7 @@ def process_donate_stars_amount(message):
         if stars < 15:
             safe_send(message.chat.id, f"{EMO_CANCEL} Минимум 15!", parse_mode='HTML'); return
         nox = stars * 400
-        temp_donate[user_id] = {'stars': stars, 'nox': nox, 'type': 'stars'}
+        temp_donate[user_id] = {'stars': stars, 'nox': nox}
         markup = types.InlineKeyboardMarkup()
         markup.add(btn("Оплатить", callback_data="donate_stars_pay", style='success', icon=ICO_DONATE))
         markup.add(btn("Отмена", callback_data="donate_cancel", style='danger', icon=ICO_CANCEL))
@@ -1290,15 +1322,14 @@ def process_donate_stars_amount(message):
 def donate_stars_pay(call):
     user_id = call.from_user.id
     if user_id not in temp_donate:
-        safe_answer(call.id, "❌ Устарело", show_alert=True); return
+        safe_answer(call.id, "❌", show_alert=True); return
     data = temp_donate.pop(user_id)
     stars = data['stars']; nox = data['nox']
-    text = f"{EMO_STARS} {nox:,} ноксов за {stars} ⭐"
     owner_text = f"Оплатил {stars} звёзд"
     markup = types.InlineKeyboardMarkup()
     markup.add(btn("Владельцу", url=f"tg://resolve?domain={OWNER_USERNAME}&text={owner_text}", style='success', icon=ICO_SUPPORT))
     markup.add(btn("Назад", callback_data="donate_stars", style='primary', icon=ICO_BACK))
-    safe_edit(call.message.chat.id, call.message.message_id, text, reply_markup=markup, parse_mode='HTML')
+    safe_edit(call.message.chat.id, call.message.message_id, f"{EMO_STARS} {nox:,} ноксов за {stars} ⭐", reply_markup=markup, parse_mode='HTML')
     safe_answer(call.id)
 
 
@@ -1350,7 +1381,7 @@ def cmd_balance_short(message):
         bot_username = bot.get_me().username
         user = get_or_create_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
         today = get_moscow_date()
-        daily_taken = user['last_bonus_date'] == today
+        daily_taken = user.get('last_bonus_date') == today
         quick_remaining = get_quick_bonus_remaining(user)
         if not daily_taken:
             bonus_label = "Бонус"; bonus_icon = ICO_BONUS_ICO
@@ -1371,7 +1402,7 @@ def cmd_balance_short(message):
 
 
 def build_bonus_state(user):
-    if user['last_bonus_date'] != get_moscow_date():
+    if user.get('last_bonus_date') != get_moscow_date():
         return 0
     if get_quick_bonus_remaining(user) == 0:
         return 1
@@ -1381,7 +1412,7 @@ def build_bonus_state(user):
 def build_balance_keyboard(user):
     bot_username = bot.get_me().username
     today = get_moscow_date()
-    daily_taken = user['last_bonus_date'] == today
+    daily_taken = user.get('last_bonus_date') == today
     quick_remaining = get_quick_bonus_remaining(user)
     if not daily_taken:
         bonus_label = "Бонус"; bonus_icon = ICO_BONUS_ICO
@@ -1416,14 +1447,14 @@ def quick_bonus_handler(call):
             with db_lock:
                 conn = get_db_connection(); cursor = conn.cursor()
                 cursor.execute('UPDATE users SET balance = balance + %s, last_bonus_date = %s WHERE user_id = %s', (bonus, today, user_id))
-                conn.commit(); cursor.close(); conn.close()
+                conn.commit(); cursor.close()
             safe_answer(call.id, f"🎉 ДЖЕКПОТ! +{bonus:,}!" if jackpot else f"🎁 +{bonus:,} ноксов!", show_alert=True)
         elif state == 1:
             now_iso = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()
             with db_lock:
                 conn = get_db_connection(); cursor = conn.cursor()
                 cursor.execute('UPDATE users SET balance = balance + %s, last_quick_bonus = %s WHERE user_id = %s', (QUICK_BONUS_AMOUNT, now_iso, user_id))
-                conn.commit(); cursor.close(); conn.close()
+                conn.commit(); cursor.close()
             safe_answer(call.id, f"💰 +{QUICK_BONUS_AMOUNT}!", show_alert=True)
         else:
             safe_answer(call.id, f"⏱ {format_time(get_quick_bonus_remaining(user))}", show_alert=True)
@@ -1434,7 +1465,7 @@ def quick_bonus_handler(call):
             pass
     except Exception as e:
         print(f"[QUICK BONUS] {e}")
-        safe_answer(call.id, "❌ Ошибка", show_alert=True)
+        safe_answer(call.id, "❌", show_alert=True)
 
 
 @bot.message_handler(func=lambda m: m.text and re.match(r'^п\s+\d+\s+@?\w+$', m.text.strip().lower()))
@@ -1465,8 +1496,8 @@ def cmd_transfer_by_username(message):
         safe_send(message.chat.id, f"{EMO_CANCEL} Себе нельзя!", parse_mode='HTML'); return
     from_user = get_or_create_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     to_user = get_or_create_user(target_id, "", "")
-    if from_user['balance'] < amount:
-        safe_send(message.chat.id, f"{EMO_CANCEL} Мало! У тебя {from_user['balance']:,}", parse_mode='HTML'); return
+    if _safe_int(from_user['balance']) < amount:
+        safe_send(message.chat.id, f"{EMO_CANCEL} Мало!", parse_mode='HTML'); return
     update_balance(from_user['user_id'], -amount)
     update_balance(to_user['user_id'], amount)
     safe_send(message.chat.id, f"{get_user_display(from_user)} → <b>{amount:,} {EMO_NOX}</b> → {get_user_display(to_user)}", parse_mode='HTML')
@@ -1487,7 +1518,7 @@ def cmd_transfer_short(message):
     to_user = get_or_create_user(message.reply_to_message.from_user.id, message.reply_to_message.from_user.username, message.reply_to_message.from_user.first_name)
     if from_user['user_id'] == to_user['user_id']:
         safe_send(message.chat.id, f"{EMO_CANCEL} Себе!", parse_mode='HTML'); return
-    if from_user['balance'] < amount:
+    if _safe_int(from_user['balance']) < amount:
         safe_send(message.chat.id, f"{EMO_CANCEL} Мало!", parse_mode='HTML'); return
     update_balance(from_user['user_id'], -amount)
     update_balance(to_user['user_id'], amount)
@@ -1505,8 +1536,9 @@ def cmd_profile(message):
     tl = sum(d['losses'] for d in stats.values())
     tg = tw + tl
     tr = 0.0 if tg == 0 else round((tw / tg) * 100, 1)
-    text = (f"{EMO_PROFILE} {display}\n{EMO_NOX} <code>{user['balance']:,}</code>\n"
-            f"{EMO_FIRE} Серия: {user['current_streak']} | {EMO_TROPHY} Рекорд: {user['max_streak']}\n\n"
+    bal = _safe_int(user['balance'])
+    text = (f"{EMO_PROFILE} {display}\n{EMO_NOX} <code>{bal:,}</code>\n"
+            f"{EMO_FIRE} Серия: {_safe_int(user['current_streak'])} | {EMO_TROPHY} Рекорд: {_safe_int(user['max_streak'])}\n\n"
             f"📊 🟢 {tw} | 🔴 {tl} | {EMO_MULT} {tr}%\n")
     for gt, d in stats.items():
         text += f"\n<b>{d['name']}</b>\n   🟢 {d['wins']} | 🔴 {d['losses']} | {EMO_MULT} {d['winrate']}%\n"
@@ -1527,8 +1559,9 @@ def cmd_other_profile(message):
     tl = sum(d['losses'] for d in stats.values())
     tg = tw + tl
     tr = 0.0 if tg == 0 else round((tw / tg) * 100, 1)
-    text = (f"{EMO_PROFILE} {display}\n{EMO_NOX} <code>{tu['balance']:,}</code>\n"
-            f"{EMO_FIRE} Серия: {tu['current_streak']} | {EMO_TROPHY} Рекорд: {tu['max_streak']}\n\n"
+    bal = _safe_int(tu['balance'])
+    text = (f"{EMO_PROFILE} {display}\n{EMO_NOX} <code>{bal:,}</code>\n"
+            f"{EMO_FIRE} Серия: {_safe_int(tu['current_streak'])} | {EMO_TROPHY} Рекорд: {_safe_int(tu['max_streak'])}\n\n"
             f"📊 🟢 {tw} | 🔴 {tl} | {EMO_MULT} {tr}%\n")
     for gt, d in stats.items():
         text += f"\n<b>{d['name']}</b>\n   🟢 {d['wins']} | 🔴 {d['losses']} | {EMO_MULT} {d['winrate']}%\n"
@@ -1552,7 +1585,7 @@ def cmd_bonus(message):
     if not check_required_subscriptions(message.from_user.id, message.chat.id, message.message_id, sender_chat=message.sender_chat): return
     user = get_or_create_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     today = get_moscow_date()
-    daily_taken = user['last_bonus_date'] == today
+    daily_taken = user.get('last_bonus_date') == today
     quick_remaining = get_quick_bonus_remaining(user)
     if not daily_taken:
         bonus_label = "Забрать ежедневный"; bonus_icon = ICO_BONUS_ICO
@@ -1562,8 +1595,7 @@ def cmd_bonus(message):
         bonus_label = f"Бонус {format_time(quick_remaining)}"; bonus_icon = ICO_BONUS_ICO
     markup = types.InlineKeyboardMarkup()
     markup.add(btn(bonus_label, callback_data=f"quick_bonus_{user['user_id']}", style='success', icon=bonus_icon))
-    text = (f"{EMO_BONUS} <b>БОНУСЫ</b>\n\n1️⃣ Ежедневный — 850-1200 {EMO_NOX}\n"
-            f"2️⃣ Каждые 10 минут — +{QUICK_BONUS_AMOUNT} {EMO_NOX}")
+    text = f"{EMO_BONUS} <b>БОНУСЫ</b>\n\n1️⃣ Ежедневный — 850-1200 {EMO_NOX}\n2️⃣ Каждые 10 минут — +{QUICK_BONUS_AMOUNT} {EMO_NOX}"
     safe_send(message.chat.id, text, reply_markup=markup, parse_mode='HTML')
 
 
@@ -1573,14 +1605,14 @@ def cmd_top(message):
     if not check_required_subscriptions(message.from_user.id, message.chat.id, message.message_id, sender_chat=message.sender_chat): return
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
-        cursor.execute('SELECT user_id, username, first_name, balance FROM users ORDER BY balance DESC LIMIT 10')
-        rows = cursor.fetchall(); cursor.close(); conn.close()
+        cursor.execute('SELECT user_id, username, first_name, balance FROM users ORDER BY balance DESC NULLS LAST LIMIT 10')
+        rows = cursor.fetchall(); cursor.close()
     if not rows:
         safe_send(message.chat.id, f"{EMO_CANCEL} Пусто.", parse_mode='HTML'); return
     text = f"{EMO_TROPHY} <b>ТОП-10</b>\n\n"
     for i, row in enumerate(rows, 1):
         u = dict(row)
-        text += f"{i}. {get_user_display(u)}\n   {EMO_NOX} <code>{u['balance']:,}</code>\n"
+        text += f"{i}. {get_user_display(u)}\n   {EMO_NOX} <code>{_safe_int(u['balance']):,}</code>\n"
     safe_send(message.chat.id, text, parse_mode='HTML')
 
 
@@ -1673,7 +1705,7 @@ def clan_create_start(cb):
     if get_user_clan(user_id):
         safe_answer(cb.id, "❌ Уже есть клан!", show_alert=True); return
     user = get_or_create_user(user_id, "", "")
-    if user['balance'] < CLAN_CREATE_COST:
+    if _safe_int(user['balance']) < CLAN_CREATE_COST:
         safe_answer(cb.id, f"❌ Нужно {CLAN_CREATE_COST:,}", show_alert=True); return
     show_clan_emoji_picker(cb.message.chat.id, cb.message.message_id, 0)
     safe_answer(cb.id)
@@ -1687,7 +1719,7 @@ def show_clan_emoji_picker(chat_id, message_id, page):
     total_pages = max(1, (len(emojis) + per_page - 1) // per_page)
     page = max(0, min(page, total_pages - 1))
     chunk = emojis[page * per_page:(page + 1) * per_page]
-    text = f"{EMO_CLAN_HEADER} <b>СОЗДАНИЕ</b>\n{EMO_NOX} {CLAN_CREATE_COST:,} ноксов\n\nСимвол ({page+1}/{total_pages}):"
+    text = f"{EMO_CLAN_HEADER} <b>СОЗДАНИЕ</b>\n{EMO_NOX} {CLAN_CREATE_COST:,}\n\n({page+1}/{total_pages}):"
     markup = types.InlineKeyboardMarkup(row_width=5)
     row = []
     for e in chunk:
@@ -1735,7 +1767,7 @@ def clan_emoji_pick(call):
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('SELECT emoji_id, fallback FROM clan_emojis WHERE id = %s', (emoji_row_id,))
-        row = cursor.fetchone(); cursor.close(); conn.close()
+        row = cursor.fetchone(); cursor.close()
     if not row:
         safe_answer(call.id, "❌ Не найден", show_alert=True); return
     if 'clan_create_temp' not in globals():
@@ -1792,7 +1824,7 @@ def clan_crown_pick(call):
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('SELECT emoji_id, fallback FROM clan_crowns WHERE id = %s', (crown_row_id,))
-        row = cursor.fetchone(); cursor.close(); conn.close()
+        row = cursor.fetchone(); cursor.close()
     if not row:
         safe_answer(call.id, "❌ Не найдена", show_alert=True); return
     temp = globals().get('clan_create_temp', {})
@@ -1820,7 +1852,7 @@ def process_clan_name(message):
     if get_user_clan(user_id):
         safe_send(message.chat.id, f"{EMO_CANCEL} Уже есть клан.", parse_mode='HTML'); return
     user = get_or_create_user(user_id, "", "")
-    if user['balance'] < CLAN_CREATE_COST:
+    if _safe_int(user['balance']) < CLAN_CREATE_COST:
         safe_send(message.chat.id, f"{EMO_CANCEL} Мало ноксов.", parse_mode='HTML'); return
     update_balance(user_id, -CLAN_CREATE_COST)
     create_clan(name, picked['emoji_id'], picked['emoji_fallback'], picked['crown_id'], picked['crown_fallback'], user_id)
@@ -1904,7 +1936,7 @@ def clan_join_cb(call):
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(btn("🟢 Подтвердить", callback_data=f"clan_req_ok_{clan_id}_{user_id}", style='success'),
                btn("🔴 Отклонить", callback_data=f"clan_req_no_{clan_id}_{user_id}", style='danger'))
-    safe_send(call.message.chat.id, f"{EMO_REPORT} {get_user_display(requester)} → {emoji_prefix}<b>{clan['name']}</b>\nЛидер {crown}: реши", parse_mode='HTML', reply_markup=markup)
+    safe_send(call.message.chat.id, f"{EMO_REPORT} {get_user_display(requester)} → {emoji_prefix}<b>{clan['name']}</b>\nЛидер {crown}", parse_mode='HTML', reply_markup=markup)
     safe_answer(call.id, "⏳")
 
 
@@ -1986,7 +2018,7 @@ def clan_expand_cb(call):
     if not clan or call.from_user.id != clan['leader_id']:
         safe_answer(call.id, "❌", show_alert=True); return
     user = get_or_create_user(call.from_user.id, "", "")
-    text = f"➕ <b>Расширить</b>\n\n👥 {clan['max_members']} → {clan['max_members']+1}\n{EMO_NOX} {CLAN_SLOT_COST:,}\n💳 {user['balance']:,}"
+    text = f"➕ <b>Расширить</b>\n\n👥 {clan['max_members']} → {clan['max_members']+1}\n{EMO_NOX} {CLAN_SLOT_COST:,}\n💳 {_safe_int(user['balance']):,}"
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(btn("🟢 Да", callback_data=f"clan_expand_ok_{clan_id}", style='success'), btn("🔴 Нет", callback_data=f"clan_back_{clan_id}", style='danger'))
     safe_edit(call.message.chat.id, call.message.message_id, text, parse_mode='HTML', reply_markup=markup)
@@ -2000,7 +2032,7 @@ def clan_expand_ok(call):
     if not clan or call.from_user.id != clan['leader_id']:
         safe_answer(call.id, "❌", show_alert=True); return
     user = get_or_create_user(call.from_user.id, "", "")
-    if user['balance'] < CLAN_SLOT_COST:
+    if _safe_int(user['balance']) < CLAN_SLOT_COST:
         safe_answer(call.id, f"❌ Мало", show_alert=True); return
     update_balance(call.from_user.id, -CLAN_SLOT_COST)
     expand_clan(clan_id)
@@ -2063,12 +2095,8 @@ def clan_disband_cb(call):
     clan = get_clan_by_id(clan_id)
     if not clan or call.from_user.id != clan['leader_id']:
         safe_answer(call.id, "❌", show_alert=True); return
-    emoji_prefix = ''
-    if clan.get('emoji_id'):
-        fallback = clan.get('emoji_fallback') or '🏰'
-        emoji_prefix = f'<tg-emoji emoji-id="{clan["emoji_id"]}">{fallback}</tg-emoji>'
     mc = get_clan_member_count(clan_id)
-    text = f"⚠️ <b>РАСПУСТИТЬ?</b>\n\n{emoji_prefix}<b>{clan['name']}</b> ({mc}/{clan['max_members']})\n\nНеобратимо."
+    text = f"⚠️ <b>РАСПУСТИТЬ?</b>\n\n<b>{clan['name']}</b> ({mc}/{clan['max_members']})\n\nНеобратимо."
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(btn("🔴 Да", callback_data=f"clan_disband_ok_{clan_id}", style='danger'), btn("🟢 Нет", callback_data=f"clan_back_{clan_id}", style='success'))
     safe_edit(call.message.chat.id, call.message.message_id, text, parse_mode='HTML', reply_markup=markup)
@@ -2130,7 +2158,7 @@ def is_moderator(user_id):
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('SELECT 1 FROM moderators WHERE user_id = %s', (user_id,))
-        row = cursor.fetchone(); cursor.close(); conn.close()
+        row = cursor.fetchone(); cursor.close()
         return row is not None
 
 
@@ -2165,7 +2193,7 @@ def cmd_ban_user(message):
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('UPDATE users SET banned = 1 WHERE user_id = %s', (tid,))
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit(); cursor.close()
     safe_send(message.chat.id, f"{EMO_SAFE} {get_user_display_by_id(tid)} забанен.", parse_mode='HTML')
 
 
@@ -2178,7 +2206,7 @@ def cmd_unban_user(message):
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('UPDATE users SET banned = 0 WHERE user_id = %s', (tid,))
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit(); cursor.close()
     safe_send(message.chat.id, f"{EMO_SAFE} {get_user_display_by_id(tid)} разбанен.", parse_mode='HTML')
 
 
@@ -2205,7 +2233,7 @@ def cmd_owner_add_balance(message):
         safe_send(message.chat.id, f"{EMO_CANCEL} Только владелец!", parse_mode='HTML'); return
     parts = message.text.strip().lower().split()
     if len(parts) < 2:
-        safe_send(message.chat.id, f"{EMO_CANCEL} Формат: пополнить [сумма]", parse_mode='HTML'); return
+        safe_send(message.chat.id, f"{EMO_CANCEL} пополнить [сумма]", parse_mode='HTML'); return
     try:
         amount = int(parts[1])
     except:
@@ -2226,7 +2254,7 @@ def cmd_withdraw_balance(message):
         safe_send(message.chat.id, f"{EMO_CANCEL} Только владелец!", parse_mode='HTML'); return
     parts = message.text.strip().lower().split()
     if len(parts) < 2:
-        safe_send(message.chat.id, f"{EMO_CANCEL} Формат: отжать [сумма]", parse_mode='HTML'); return
+        safe_send(message.chat.id, f"{EMO_CANCEL} отжать [сумма]", parse_mode='HTML'); return
     try:
         amount = int(parts[1])
     except:
@@ -2237,12 +2265,12 @@ def cmd_withdraw_balance(message):
     if not tid or tid == OWNER_ID:
         safe_send(message.chat.id, f"{EMO_CANCEL} Нельзя", parse_mode='HTML'); return
     tu = get_or_create_user(tid, "", "")
-    if tu['balance'] < amount:
+    if _safe_int(tu['balance']) < amount:
         safe_send(message.chat.id, f"{EMO_CANCEL} Мало", parse_mode='HTML'); return
     update_balance(tid, -amount)
     update_balance(OWNER_ID, amount)
     tf = get_or_create_user(tid, "", "")
-    safe_send(message.chat.id, f"{EMO_CROWN} Снял {amount:,} {EMO_NOX}\n📉 {tf['balance']:,}", parse_mode='HTML')
+    safe_send(message.chat.id, f"{EMO_CROWN} Снял {amount:,} {EMO_NOX}\n📉 {_safe_int(tf['balance']):,}", parse_mode='HTML')
 
 
 @bot.message_handler(func=lambda m: m.text and m.text.strip().lower() == 'модераторы')
@@ -2250,7 +2278,7 @@ def show_moderators(message):
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute("SELECT user_id, role FROM moderators ORDER BY CASE WHEN role = 'owner' THEN 0 ELSE 1 END")
-        rows = cursor.fetchall(); cursor.close(); conn.close()
+        rows = cursor.fetchall(); cursor.close()
     if not rows:
         safe_send(message.chat.id, f"{EMO_CANCEL} Пусто.", parse_mode='HTML'); return
     text = f"{EMO_MODS} <b>МОДЕРАТОРЫ</b>\n\n"
@@ -2366,7 +2394,7 @@ def cmd_promote_moderator(message):
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute("INSERT INTO moderators (user_id, role, added_by) VALUES (%s, 'moderator', %s) ON CONFLICT (user_id) DO NOTHING", (target_id, OWNER_ID))
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit(); cursor.close()
     safe_send(message.chat.id, f"{EMO_SAFE} {get_user_display_by_id(target_id)} модер!", parse_mode='HTML')
 
 
@@ -2378,7 +2406,7 @@ def cmd_demote_moderator(message):
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute("DELETE FROM moderators WHERE user_id = %s AND role != 'owner'", (target_id,))
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit(); cursor.close()
     safe_send(message.chat.id, f"{EMO_SAFE} {get_user_display_by_id(target_id)} не модер.", parse_mode='HTML')
 
 
@@ -2431,10 +2459,8 @@ def finalize_game(chat_id, winner_id, loser_id, stake, game_type, result, msg_id
     if result == 'win':
         wa = stake * 2
         update_balance(winner_id, wa)
-        update_streak(winner_id, True, stake)
-        update_streak(loser_id, False, stake)
-        update_game_stats(winner_id, game_type, True)
-        update_game_stats(loser_id, game_type, False)
+        update_streak(winner_id, True, stake); update_streak(loser_id, False, stake)
+        update_game_stats(winner_id, game_type, True); update_game_stats(loser_id, game_type, False)
         safe_send(chat_id, f"{EMO_CROWN} {get_user_display_by_id(winner_id)} +{wa - stake:,} {EMO_NOX}", parse_mode='HTML')
     elif result == 'draw':
         update_balance(winner_id, stake); update_balance(loser_id, stake)
@@ -2442,8 +2468,7 @@ def finalize_game(chat_id, winner_id, loser_id, stake, game_type, result, msg_id
     elif result == 'error':
         update_balance(winner_id, stake); update_balance(loser_id, stake)
         safe_send(chat_id, f"{EMO_CANCEL} Ошибка! Возврат.")
-    else:
-        return
+    else: return
     remove_player_from_game(winner_id); remove_player_from_game(loser_id)
     if chat_id in active_games and msg_id in active_games[chat_id]:
         del active_games[chat_id][msg_id]
@@ -2452,26 +2477,21 @@ def finalize_game(chat_id, winner_id, loser_id, stake, game_type, result, msg_id
 
 @bot.callback_query_handler(func=lambda call: call.data == "reset_solo_games")
 def reset_solo_games(call):
-    user_id = call.from_user.id
-    chat_id = call.message.chat.id
+    user_id = call.from_user.id; chat_id = call.message.chat.id
     refund = 0
     if user_id in solo_game_stakes:
         refund = solo_game_stakes.pop(user_id)
-        try:
-            update_balance(user_id, refund)
+        try: update_balance(user_id, refund)
         except: pass
     casino_in_progress[user_id] = False
-    if user_id in chest_cache:
-        del chest_cache[user_id]
+    if user_id in chest_cache: del chest_cache[user_id]
     if refund > 0:
         safe_answer(call.id, f"✅ {refund:,} возвращено!", show_alert=True)
-        try:
-            safe_edit(chat_id, call.message.message_id, f"{EMO_SAFE} Сброшено.\n{EMO_NOX} Возврат: {refund:,}", parse_mode='HTML')
+        try: safe_edit(chat_id, call.message.message_id, f"{EMO_SAFE} Сброшено.\n{EMO_NOX} Возврат: {refund:,}", parse_mode='HTML')
         except: pass
     else:
         safe_answer(call.id, "✅ Сброшено!", show_alert=True)
-        try:
-            safe_edit(chat_id, call.message.message_id, f"{EMO_SAFE} Сброшено.", parse_mode='HTML')
+        try: safe_edit(chat_id, call.message.message_id, f"{EMO_SAFE} Сброшено.", parse_mode='HTML')
         except: pass
 
 
@@ -2487,20 +2507,19 @@ def cmd_slots_chat(message):
     if not match:
         safe_send(chat_id, f"{EMO_BULB} слот [ставка]", parse_mode='HTML'); return
     user = get_or_create_user(user_id, message.from_user.username, message.from_user.first_name)
-    stake_arg = match.group(1).strip()
-    if stake_arg == 'вб':
-        stake = user['balance']
+    sa = match.group(1).strip()
+    if sa == 'вб':
+        stake = _safe_int(user['balance'])
         if stake < 1:
             safe_send(chat_id, f"{EMO_BULB} Нет ноксов!", parse_mode='HTML'); return
     else:
-        try:
-            stake = int(stake_arg)
+        try: stake = int(sa)
         except ValueError:
             safe_send(chat_id, f"{EMO_BULB} Число или вб", parse_mode='HTML'); return
         if stake < 1:
             safe_send(chat_id, f"{EMO_BULB} > 0", parse_mode='HTML'); return
-    if user['balance'] < stake:
-        safe_send(chat_id, f"{EMO_BULB} Мало! {user['balance']:,}", parse_mode='HTML'); return
+    if _safe_int(user['balance']) < stake:
+        safe_send(chat_id, f"{EMO_BULB} Мало!", parse_mode='HTML'); return
     update_balance(user_id, -stake)
     try:
         emojis = ['🍒', '🍋', '🍊', '💎']
@@ -2541,17 +2560,16 @@ def cmd_chest(message):
     user = get_or_create_user(user_id, message.from_user.username, message.from_user.first_name)
     sa = match.group(1).strip()
     if sa == 'вб':
-        stake = user['balance']
+        stake = _safe_int(user['balance'])
         if stake < 1:
             safe_send(chat_id, f"{EMO_BULB} Нет ноксов!", parse_mode='HTML'); return
     else:
-        try:
-            stake = int(sa)
+        try: stake = int(sa)
         except ValueError:
             safe_send(chat_id, f"{EMO_BULB} Число или вб", parse_mode='HTML'); return
         if stake <= 0:
             safe_send(chat_id, f"{EMO_BULB} > 0", parse_mode='HTML'); return
-    if user['balance'] < stake:
+    if _safe_int(user['balance']) < stake:
         safe_send(chat_id, f"{EMO_BULB} Мало!", parse_mode='HTML'); return
     update_balance(user_id, -stake)
     casino_in_progress[user_id] = True
@@ -2680,17 +2698,16 @@ def cmd_floors_game(message):
     user = get_or_create_user(user_id, message.from_user.username, message.from_user.first_name)
     sa = match.group(1).strip()
     if sa == 'вб':
-        stake = user['balance']
+        stake = _safe_int(user['balance'])
         if stake < 1:
             safe_send(chat_id, f"{EMO_BULB} Нет", parse_mode='HTML'); return
     else:
-        try:
-            stake = int(sa)
+        try: stake = int(sa)
         except ValueError:
             safe_send(chat_id, f"{EMO_BULB} Число или вб", parse_mode='HTML'); return
         if stake < 1:
             safe_send(chat_id, f"{EMO_BULB} > 0", parse_mode='HTML'); return
-    if user['balance'] < stake:
+    if _safe_int(user['balance']) < stake:
         safe_send(chat_id, f"{EMO_BULB} Мало!", parse_mode='HTML'); return
     update_balance(user_id, -stake)
     casino_in_progress[user_id] = True
@@ -2762,31 +2779,29 @@ def cmd_roulette_game(message):
     user = get_or_create_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     sa = match.group(1).strip()
     if sa == 'вб':
-        stake = user['balance']
+        stake = _safe_int(user['balance'])
         if stake < 1:
             safe_send(message.chat.id, f"{EMO_BULB} Нет", parse_mode='HTML'); return
     else:
-        try:
-            stake = int(sa)
+        try: stake = int(sa)
         except ValueError:
             safe_send(message.chat.id, f"{EMO_BULB} Число или вб", parse_mode='HTML'); return
         if stake < 1:
             safe_send(message.chat.id, f"{EMO_BULB} > 0", parse_mode='HTML'); return
-    if user['balance'] < stake:
+    if _safe_int(user['balance']) < stake:
         safe_send(message.chat.id, f"{EMO_BULB} Мало!", parse_mode='HTML'); return
-    if check_player_in_game(message.from_user.id):
-        force_cleanup_player(message.from_user.id)
+    if check_player_in_game(message.from_user.id): force_cleanup_player(message.from_user.id)
     user_display = get_user_display(user)
     if message.reply_to_message:
         target_id = message.reply_to_message.from_user.id
         target = get_or_create_user(target_id, message.reply_to_message.from_user.username, message.reply_to_message.from_user.first_name)
         target_display = get_user_display(target)
         if target_id == user['user_id']:
-            safe_send(message.chat.id, f"{EMO_BULB} Себе нельзя!", parse_mode='HTML'); return
-        if target['balance'] < stake:
-            safe_send(message.chat.id, f"{EMO_BULB} У соперника мало!", parse_mode='HTML'); return
+            safe_send(message.chat.id, f"{EMO_BULB} Себе!", parse_mode='HTML'); return
+        if _safe_int(target['balance']) < stake:
+            safe_send(message.chat.id, f"{EMO_BULB} Мало у соперника!", parse_mode='HTML'); return
         if check_player_in_game(target_id):
-            safe_send(message.chat.id, f"{EMO_BULB} Соперник занят!", parse_mode='HTML'); return
+            safe_send(message.chat.id, f"{EMO_BULB} Занят!", parse_mode='HTML'); return
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Принять", callback_data=f"join_roulette_{message.from_user.id}_{target_id}_{stake}_{message.message_id}", style='success', icon=ICO_ACCEPT))
         markup.add(btn("Отмена", callback_data=f"cancel_invite_{message.message_id}", style='danger', icon=ICO_CANCEL))
@@ -2861,7 +2876,7 @@ def join_roulette_open(call):
         if check_player_in_game(uid): force_cleanup_player(uid)
         del invites[mid]
     h = get_or_create_user(hid, "", ""); gu = get_or_create_user(uid, call.from_user.username, call.from_user.first_name)
-    if h['balance'] < stake or gu['balance'] < stake:
+    if _safe_int(h['balance']) < stake or _safe_int(gu['balance']) < stake:
         safe_answer(call.id, "❌ Мало!", show_alert=True); return
     update_balance(hid, -stake); update_balance(uid, -stake)
     try: bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -2882,7 +2897,7 @@ def join_roulette(call):
         if check_player_in_game(uid): force_cleanup_player(uid)
         del invites[mid]
     h = get_or_create_user(hid, "", ""); gu = get_or_create_user(uid, call.from_user.username, call.from_user.first_name)
-    if h['balance'] < stake or gu['balance'] < stake:
+    if _safe_int(h['balance']) < stake or _safe_int(gu['balance']) < stake:
         safe_answer(call.id, "❌ Мало!", show_alert=True); return
     update_balance(hid, -stake); update_balance(uid, -stake)
     try: bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -2902,17 +2917,16 @@ def cmd_eagle_game(message):
         user = get_or_create_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
         sa = match.group(2).strip()
         if sa == 'вб':
-            stake = user['balance']
+            stake = _safe_int(user['balance'])
             if stake < 1:
                 safe_send(message.chat.id, f"{EMO_BULB} Нет", parse_mode='HTML'); return
         else:
-            try:
-                stake = int(sa)
+            try: stake = int(sa)
             except ValueError:
                 safe_send(message.chat.id, f"{EMO_BULB} Число или вб", parse_mode='HTML'); return
             if stake < 1:
                 safe_send(message.chat.id, f"{EMO_BULB} > 0", parse_mode='HTML'); return
-        if user['balance'] < stake:
+        if _safe_int(user['balance']) < stake:
             safe_send(message.chat.id, f"{EMO_BULB} Мало!", parse_mode='HTML'); return
         if check_player_in_game(message.from_user.id): force_cleanup_player(message.from_user.id)
         user_display = get_user_display(user)
@@ -2921,8 +2935,8 @@ def cmd_eagle_game(message):
             target = get_or_create_user(target_id, message.reply_to_message.from_user.username, message.reply_to_message.from_user.first_name)
             target_display = get_user_display(target)
             if target_id == user['user_id']:
-                safe_send(message.chat.id, f"{EMO_BULB} Себе нельзя!", parse_mode='HTML'); return
-            if target['balance'] < stake:
+                safe_send(message.chat.id, f"{EMO_BULB} Себе!", parse_mode='HTML'); return
+            if _safe_int(target['balance']) < stake:
                 safe_send(message.chat.id, f"{EMO_BULB} Мало у соперника!", parse_mode='HTML'); return
             if check_player_in_game(target_id):
                 safe_send(message.chat.id, f"{EMO_BULB} Занят!", parse_mode='HTML'); return
@@ -2983,7 +2997,7 @@ def cancel_eagle_invite(call):
 
 def start_eagle_duel(call, hid, gid, stake):
     h = get_or_create_user(hid, "", ""); g = get_or_create_user(gid, call.from_user.username, call.from_user.first_name)
-    if h['balance'] < stake or g['balance'] < stake:
+    if _safe_int(h['balance']) < stake or _safe_int(g['balance']) < stake:
         safe_send(call.message.chat.id, "❌ Мало!", parse_mode='HTML'); return
     if check_player_in_game(hid): force_cleanup_player(hid)
     if check_player_in_game(gid): force_cleanup_player(gid)
@@ -3064,17 +3078,16 @@ def cmd_dice_game(message):
     user = get_or_create_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     sa = match.group(2).strip()
     if sa == 'вб':
-        stake = user['balance']
+        stake = _safe_int(user['balance'])
         if stake < 1:
             safe_send(message.chat.id, f"{EMO_BULB} Нет", parse_mode='HTML'); return
     else:
-        try:
-            stake = int(sa)
+        try: stake = int(sa)
         except ValueError:
             safe_send(message.chat.id, f"{EMO_BULB} Число или вб", parse_mode='HTML'); return
         if stake < 1:
             safe_send(message.chat.id, f"{EMO_BULB} > 0", parse_mode='HTML'); return
-    if user['balance'] < stake:
+    if _safe_int(user['balance']) < stake:
         safe_send(message.chat.id, f"{EMO_BULB} Мало!", parse_mode='HTML'); return
     if check_player_in_game(message.from_user.id): force_cleanup_player(message.from_user.id)
     user_display = get_user_display(user)
@@ -3084,7 +3097,7 @@ def cmd_dice_game(message):
         target_display = get_user_display(target)
         if target_id == user['user_id']:
             safe_send(message.chat.id, f"{EMO_BULB} Себе!", parse_mode='HTML'); return
-        if target['balance'] < stake:
+        if _safe_int(target['balance']) < stake:
             safe_send(message.chat.id, f"{EMO_BULB} Мало у соперника!", parse_mode='HTML'); return
         if check_player_in_game(target_id):
             safe_send(message.chat.id, f"{EMO_BULB} Занят!", parse_mode='HTML'); return
@@ -3141,7 +3154,7 @@ def join_dice_open(call):
         if check_player_in_game(uid): force_cleanup_player(uid)
         del invites[mid]
     h = get_or_create_user(hid, "", ""); gu = get_or_create_user(uid, call.from_user.username, call.from_user.first_name)
-    if h['balance'] < stake or gu['balance'] < stake:
+    if _safe_int(h['balance']) < stake or _safe_int(gu['balance']) < stake:
         safe_answer(call.id, "❌ Мало!", show_alert=True); return
     update_balance(hid, -stake); update_balance(uid, -stake)
     try: bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -3162,7 +3175,7 @@ def join_dice(call):
         if check_player_in_game(uid): force_cleanup_player(uid)
         del invites[mid]
     h = get_or_create_user(hid, "", ""); gu = get_or_create_user(uid, call.from_user.username, call.from_user.first_name)
-    if h['balance'] < stake or gu['balance'] < stake:
+    if _safe_int(h['balance']) < stake or _safe_int(gu['balance']) < stake:
         safe_answer(call.id, "❌ Мало!", show_alert=True); return
     update_balance(hid, -stake); update_balance(uid, -stake)
     try: bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -3180,17 +3193,16 @@ def cmd_rps_game(message):
     user = get_or_create_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     sa = match.group(1).strip()
     if sa == 'вб':
-        stake = user['balance']
+        stake = _safe_int(user['balance'])
         if stake < 1:
             safe_send(message.chat.id, f"{EMO_BULB} Нет", parse_mode='HTML'); return
     else:
-        try:
-            stake = int(sa)
+        try: stake = int(sa)
         except ValueError:
             safe_send(message.chat.id, f"{EMO_BULB} Число или вб", parse_mode='HTML'); return
         if stake < 1:
             safe_send(message.chat.id, f"{EMO_BULB} > 0", parse_mode='HTML'); return
-    if user['balance'] < stake:
+    if _safe_int(user['balance']) < stake:
         safe_send(message.chat.id, f"{EMO_BULB} Мало!", parse_mode='HTML'); return
     if check_player_in_game(message.from_user.id): force_cleanup_player(message.from_user.id)
     user_display = get_user_display(user)
@@ -3200,7 +3212,7 @@ def cmd_rps_game(message):
         target_display = get_user_display(target)
         if target_id == user['user_id']:
             safe_send(message.chat.id, f"{EMO_BULB} Себе!", parse_mode='HTML'); return
-        if target['balance'] < stake:
+        if _safe_int(target['balance']) < stake:
             safe_send(message.chat.id, f"{EMO_BULB} Мало у соперника!", parse_mode='HTML'); return
         if check_player_in_game(target_id):
             safe_send(message.chat.id, f"{EMO_BULB} Занят!", parse_mode='HTML'); return
@@ -3292,7 +3304,7 @@ def join_rps_open(call):
         if check_player_in_game(uid): force_cleanup_player(uid)
         del invites[mid]
     h = get_or_create_user(hid, "", ""); gu = get_or_create_user(uid, call.from_user.username, call.from_user.first_name)
-    if h['balance'] < stake or gu['balance'] < stake:
+    if _safe_int(h['balance']) < stake or _safe_int(gu['balance']) < stake:
         safe_answer(call.id, "❌ Мало!", show_alert=True); return
     update_balance(hid, -stake); update_balance(uid, -stake)
     try: bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -3313,7 +3325,7 @@ def join_rps(call):
         if check_player_in_game(uid): force_cleanup_player(uid)
         del invites[mid]
     h = get_or_create_user(hid, "", ""); gu = get_or_create_user(uid, call.from_user.username, call.from_user.first_name)
-    if h['balance'] < stake or gu['balance'] < stake:
+    if _safe_int(h['balance']) < stake or _safe_int(gu['balance']) < stake:
         safe_answer(call.id, "❌ Мало!", show_alert=True); return
     update_balance(hid, -stake); update_balance(uid, -stake)
     try: bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -3331,17 +3343,16 @@ def cmd_ttt_game(message):
     user = get_or_create_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     sa = match.group(1).strip()
     if sa == 'вб':
-        stake = user['balance']
+        stake = _safe_int(user['balance'])
         if stake < 1:
             safe_send(message.chat.id, f"{EMO_BULB} Нет", parse_mode='HTML'); return
     else:
-        try:
-            stake = int(sa)
+        try: stake = int(sa)
         except ValueError:
             safe_send(message.chat.id, f"{EMO_BULB} Число или вб", parse_mode='HTML'); return
         if stake < 1:
             safe_send(message.chat.id, f"{EMO_BULB} > 0", parse_mode='HTML'); return
-    if user['balance'] < stake:
+    if _safe_int(user['balance']) < stake:
         safe_send(message.chat.id, f"{EMO_BULB} Мало!", parse_mode='HTML'); return
     if check_player_in_game(message.from_user.id): force_cleanup_player(message.from_user.id)
     user_display = get_user_display(user)
@@ -3351,7 +3362,7 @@ def cmd_ttt_game(message):
         target_display = get_user_display(target)
         if target_id == user['user_id']:
             safe_send(message.chat.id, f"{EMO_BULB} Себе!", parse_mode='HTML'); return
-        if target['balance'] < stake:
+        if _safe_int(target['balance']) < stake:
             safe_send(message.chat.id, f"{EMO_BULB} Мало у соперника!", parse_mode='HTML'); return
         if check_player_in_game(target_id):
             safe_send(message.chat.id, f"{EMO_BULB} Занят!", parse_mode='HTML'); return
@@ -3373,8 +3384,8 @@ def start_ttt_match(cid, p1, p2, stake):
     board = ['⬜'] * 9
     p1d = get_user_display(p1); p2d = get_user_display(p2)
     p1n = get_or_create_user(p1['user_id'], "", ""); p2n = get_or_create_user(p2['user_id'], "", "")
-    if p1n['balance'] > p2n['balance']: first = 'X'; fd = p1d; extra = f"({p1d})"
-    elif p2n['balance'] > p1n['balance']: first = 'O'; fd = p2d; extra = f"({p2d})"
+    if _safe_int(p1n['balance']) > _safe_int(p2n['balance']): first = 'X'; fd = p1d; extra = f"({p1d})"
+    elif _safe_int(p2n['balance']) > _safe_int(p1n['balance']): first = 'O'; fd = p2d; extra = f"({p2d})"
     else:
         first = random.choice(['X', 'O']); fd = p1d if first == 'X' else p2d; extra = "(равно)"
     msg = safe_send(cid, f"{EMO_TTT_INVITE} Поле...")
@@ -3486,7 +3497,7 @@ def join_ttt_open(call):
         if check_player_in_game(uid): force_cleanup_player(uid)
         del invites[mid]
     h = get_or_create_user(hid, "", ""); gu = get_or_create_user(uid, call.from_user.username, call.from_user.first_name)
-    if h['balance'] < stake or gu['balance'] < stake:
+    if _safe_int(h['balance']) < stake or _safe_int(gu['balance']) < stake:
         safe_answer(call.id, "❌ Мало!", show_alert=True); return
     update_balance(hid, -stake); update_balance(uid, -stake)
     try: bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -3507,7 +3518,7 @@ def join_ttt(call):
         if check_player_in_game(uid): force_cleanup_player(uid)
         del invites[mid]
     h = get_or_create_user(hid, "", ""); gu = get_or_create_user(uid, call.from_user.username, call.from_user.first_name)
-    if h['balance'] < stake or gu['balance'] < stake:
+    if _safe_int(h['balance']) < stake or _safe_int(gu['balance']) < stake:
         safe_answer(call.id, "❌ Мало!", show_alert=True); return
     update_balance(hid, -stake); update_balance(uid, -stake)
     try: bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -3525,17 +3536,16 @@ def cmd_mines_game(message):
     user = get_or_create_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     sa = match.group(1).strip()
     if sa == 'вб':
-        stake = user['balance']
+        stake = _safe_int(user['balance'])
         if stake < 1:
             safe_send(message.chat.id, f"{EMO_BULB} Нет", parse_mode='HTML'); return
     else:
-        try:
-            stake = int(sa)
+        try: stake = int(sa)
         except ValueError:
             safe_send(message.chat.id, f"{EMO_BULB} Число или вб", parse_mode='HTML'); return
         if stake < 1:
             safe_send(message.chat.id, f"{EMO_BULB} > 0", parse_mode='HTML'); return
-    if user['balance'] < stake:
+    if _safe_int(user['balance']) < stake:
         safe_send(message.chat.id, f"{EMO_BULB} Мало!", parse_mode='HTML'); return
     if check_player_in_game(message.from_user.id): force_cleanup_player(message.from_user.id)
     user_display = get_user_display(user)
@@ -3545,7 +3555,7 @@ def cmd_mines_game(message):
         target_display = get_user_display(target)
         if target_id == user['user_id']:
             safe_send(message.chat.id, f"{EMO_BULB} Себе!", parse_mode='HTML'); return
-        if target['balance'] < stake:
+        if _safe_int(target['balance']) < stake:
             safe_send(message.chat.id, f"{EMO_BULB} Мало!", parse_mode='HTML'); return
         if check_player_in_game(target_id):
             safe_send(message.chat.id, f"{EMO_BULB} Занят!", parse_mode='HTML'); return
@@ -3569,8 +3579,8 @@ def start_mines_match(cid, p1, p2, stake):
     for i in random.sample(range(25), 6): mines[i] = True
     p1n = get_or_create_user(p1['user_id'], "", ""); p2n = get_or_create_user(p2['user_id'], "", "")
     p1d = get_user_display(p1); p2d = get_user_display(p2)
-    if p1n['balance'] > p2n['balance']: fp = 1; fd = p1d; extra = f"({p1d})"
-    elif p2n['balance'] > p1n['balance']: fp = 2; fd = p2d; extra = f"({p2d})"
+    if _safe_int(p1n['balance']) > _safe_int(p2n['balance']): fp = 1; fd = p1d; extra = f"({p1d})"
+    elif _safe_int(p2n['balance']) > _safe_int(p1n['balance']): fp = 2; fd = p2d; extra = f"({p2d})"
     else: fp = random.choice([1, 2]); fd = p1d if fp == 1 else p2d; extra = "(равно)"
     msg = safe_send(cid, f"{EMO_MINE} Минное поле 5x5", parse_mode='HTML')
     if not msg: return
@@ -3680,7 +3690,7 @@ def join_mines_open(call):
         if check_player_in_game(uid): force_cleanup_player(uid)
         del invites[mid]
     h = get_or_create_user(hid, "", ""); gu = get_or_create_user(uid, call.from_user.username, call.from_user.first_name)
-    if h['balance'] < stake or gu['balance'] < stake:
+    if _safe_int(h['balance']) < stake or _safe_int(gu['balance']) < stake:
         safe_answer(call.id, "❌ Мало!", show_alert=True); return
     update_balance(hid, -stake); update_balance(uid, -stake)
     try: bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -3701,7 +3711,7 @@ def join_mines(call):
         if check_player_in_game(uid): force_cleanup_player(uid)
         del invites[mid]
     h = get_or_create_user(hid, "", ""); gu = get_or_create_user(uid, call.from_user.username, call.from_user.first_name)
-    if h['balance'] < stake or gu['balance'] < stake:
+    if _safe_int(h['balance']) < stake or _safe_int(gu['balance']) < stake:
         safe_answer(call.id, "❌ Мало!", show_alert=True); return
     update_balance(hid, -stake); update_balance(uid, -stake)
     try: bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -3721,17 +3731,16 @@ def cmd_number_game(message):
         safe_send(message.chat.id, f"{EMO_BULB} > 1", parse_mode='HTML'); return
     user = get_or_create_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     if sa == 'вб':
-        stake = user['balance']
+        stake = _safe_int(user['balance'])
         if stake < 1:
             safe_send(message.chat.id, f"{EMO_BULB} Нет", parse_mode='HTML'); return
     else:
-        try:
-            stake = int(sa)
+        try: stake = int(sa)
         except ValueError:
             safe_send(message.chat.id, f"{EMO_BULB} Число или вб", parse_mode='HTML'); return
         if stake < 1:
             safe_send(message.chat.id, f"{EMO_BULB} > 0", parse_mode='HTML'); return
-    if user['balance'] < stake:
+    if _safe_int(user['balance']) < stake:
         safe_send(message.chat.id, f"{EMO_BULB} Мало!", parse_mode='HTML'); return
     if check_player_in_game(message.from_user.id): force_cleanup_player(message.from_user.id)
     user_display = get_user_display(user)
@@ -3741,7 +3750,7 @@ def cmd_number_game(message):
         target_display = get_user_display(target)
         if target_id == user['user_id']:
             safe_send(message.chat.id, f"{EMO_BULB} Себе!", parse_mode='HTML'); return
-        if target['balance'] < stake:
+        if _safe_int(target['balance']) < stake:
             safe_send(message.chat.id, f"{EMO_BULB} Мало!", parse_mode='HTML'); return
         if check_player_in_game(target_id):
             safe_send(message.chat.id, f"{EMO_BULB} Занят!", parse_mode='HTML'); return
@@ -3762,8 +3771,8 @@ def start_number_match(cid, p1, p2, mx, stake):
     add_player_to_game(p1['user_id']); add_player_to_game(p2['user_id'])
     secret = random.randint(1, mx)
     p1d = get_user_display(p1); p2d = get_user_display(p2)
-    if p1['balance'] > p2['balance']: turn = p1['user_id']; td = p1d
-    elif p2['balance'] > p1['balance']: turn = p2['user_id']; td = p2d
+    if _safe_int(p1['balance']) > _safe_int(p2['balance']): turn = p1['user_id']; td = p1d
+    elif _safe_int(p2['balance']) > _safe_int(p1['balance']): turn = p2['user_id']; td = p2d
     else:
         turn = random.choice([p1['user_id'], p2['user_id']])
         td = p1d if turn == p1['user_id'] else p2d
@@ -3826,7 +3835,7 @@ def join_number_open(call):
         if check_player_in_game(uid): force_cleanup_player(uid)
         del invites[mid]
     h = get_or_create_user(hid, "", ""); gu = get_or_create_user(uid, call.from_user.username, call.from_user.first_name)
-    if h['balance'] < stake or gu['balance'] < stake:
+    if _safe_int(h['balance']) < stake or _safe_int(gu['balance']) < stake:
         safe_answer(call.id, "❌ Мало!", show_alert=True); return
     update_balance(hid, -stake); update_balance(uid, -stake)
     try: bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -3847,7 +3856,7 @@ def join_number(call):
         if check_player_in_game(uid): force_cleanup_player(uid)
         del invites[mid]
     h = get_or_create_user(hid, "", ""); gu = get_or_create_user(uid, call.from_user.username, call.from_user.first_name)
-    if h['balance'] < stake or gu['balance'] < stake:
+    if _safe_int(h['balance']) < stake or _safe_int(gu['balance']) < stake:
         safe_answer(call.id, "❌ Мало!", show_alert=True); return
     update_balance(hid, -stake); update_balance(uid, -stake)
     try: bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -3978,7 +3987,7 @@ def admin_panel(call):
     markup.add(btn("Подписка", callback_data="adm_subscriptions", style='success', icon=ICO_CHANNEL))
     markup.add(btn("Чаты", callback_data="adm_subscription_management", style='primary', icon=ICO_CHAT))
     markup.add(btn("Символы кланов", callback_data="adm_clan_emojis", style='success', icon=ICO_PROMO))
-    markup.add(btn("Короны лидера", callback_data="adm_clan_crowns", style='success', icon=ICO_ADMIN))
+    markup.add(btn("Короны", callback_data="adm_clan_crowns", style='success', icon=ICO_ADMIN))
     markup.add(btn("Список кланов", callback_data="adm_clans_list", style='primary', icon=ICO_ADMIN))
     markup.add(btn("Перезагрузить", callback_data="adm_restart", style='danger', icon=ICO_TIMER))
     markup.add(btn("Назад", callback_data="back_to_menu", style='primary', icon=ICO_BACK))
@@ -4012,7 +4021,7 @@ def process_admin_refill(message):
         if a <= 0: return
         update_balance(OWNER_ID, a)
         u = get_or_create_user(OWNER_ID, "", "")
-        safe_send(message.chat.id, f"{EMO_SAFE} +{a:,}! Баланс: {u['balance']:,}", parse_mode='HTML')
+        safe_send(message.chat.id, f"{EMO_SAFE} +{a:,}! Баланс: {_safe_int(u['balance']):,}", parse_mode='HTML')
     except:
         safe_send(message.chat.id, f"{EMO_CANCEL} Число!", parse_mode='HTML')
 
@@ -4069,7 +4078,7 @@ def process_admin_add_user(message):
         get_or_create_user(uid, "", "")
         update_balance(uid, a)
         t = get_or_create_user(uid, "", "")
-        safe_send(message.chat.id, f"{EMO_SAFE} {get_user_display(t)} +{a:,}! {t['balance']:,}", parse_mode='HTML')
+        safe_send(message.chat.id, f"{EMO_SAFE} {get_user_display(t)} +{a:,}! {_safe_int(t['balance']):,}", parse_mode='HTML')
     except:
         safe_send(message.chat.id, f"{EMO_CANCEL} Формат: ID сумма", parse_mode='HTML')
 
@@ -4092,7 +4101,7 @@ def process_promo_create(message):
         with db_lock:
             conn = get_db_connection(); cur = conn.cursor()
             cur.execute('''INSERT INTO promos (code, reward, max_uses, current_uses) VALUES (%s, %s, %s, 0) ON CONFLICT (code) DO UPDATE SET reward = EXCLUDED.reward, max_uses = EXCLUDED.max_uses, current_uses = 0''', (code, rw, mx))
-            conn.commit(); cur.close(); conn.close()
+            conn.commit(); cur.close()
         safe_send(message.chat.id, f"{EMO_SAFE} <code>{code}</code>\n💰 {rw:,}\n👥 {mx}", parse_mode='HTML')
     except Exception:
         safe_send(message.chat.id, "❌ Формат: <b>код</b> <b>активаций</b> <b>сумма</b>", parse_mode='HTML')
@@ -4120,7 +4129,7 @@ def show_user_page(cid, uid, page, mid=None):
     t = f"👥 <b>Юзеры</b> ({total}, стр. {page+1}/{pages})\n"
     for i in range(st, en):
         row = rows[i]
-        t += f"{i+1}. {get_user_display(row)} — <code>{row['balance']:,}</code>\n"
+        t += f"{i+1}. {get_user_display(row)} — <code>{_safe_int(row['balance']):,}</code>\n"
     markup = types.InlineKeyboardMarkup(row_width=2)
     if page > 0:
         markup.add(btn("◀️", callback_data=f"user_page_{page-1}", style='primary', icon=ICO_BACK))
@@ -4153,7 +4162,7 @@ def adm_promo_history(call):
             all_promos = cursor.fetchall()
             if not all_promos:
                 safe_send(call.message.chat.id, f"{EMO_CANCEL} Нет промо.", parse_mode='HTML')
-                cursor.close(); conn.close(); return
+                cursor.close(); return
             total_pages = (len(all_promos) + PROMOS_PER_PAGE - 1) // PROMOS_PER_PAGE
             page = max(1, min(page, total_pages))
             start_idx = (page - 1) * PROMOS_PER_PAGE
@@ -4161,7 +4170,7 @@ def adm_promo_history(call):
             text = f"📋 <b>ИСТОРИЯ (Стр. {page}/{total_pages})</b>\n"
             for promo in page_promos:
                 code = promo['code']
-                text += f"\n<b>Код:</b> <code>{code}</code>\n{EMO_NOX} {promo['reward']:,}\n👥 {promo['current_uses']}/{promo['max_uses']}\n"
+                text += f"\n<b>Код:</b> <code>{code}</code>\n{EMO_NOX} {_safe_int(promo['reward']):,}\n👥 {_safe_int(promo['current_uses'])}/{_safe_int(promo['max_uses'])}\n"
                 cursor.execute('SELECT u.username, u.first_name, ph.activated_at FROM promo_history ph JOIN users u ON ph.user_id = u.user_id WHERE ph.code = %s ORDER BY ph.activated_at DESC', (code,))
                 users = cursor.fetchall()
                 if users:
@@ -4169,7 +4178,7 @@ def adm_promo_history(call):
                     text += "👤 " + ", ".join(ulist) + "\n"
                 else:
                     text += "👤 никто\n"
-            cursor.close(); conn.close()
+            cursor.close()
         markup = types.InlineKeyboardMarkup()
         nav = []
         if page > 1: nav.append(btn("◀️", callback_data=f"adm_promo_page_{page-1}", style='primary', icon=ICO_BACK))
@@ -4242,12 +4251,12 @@ def adm_subscription_management(call):
                 with db_lock:
                     conn = get_db_connection(); cursor = conn.cursor()
                     cursor.execute('DELETE FROM chats WHERE chat_id = %s', (row['chat_id'],))
-                    conn.commit(); cursor.close(); conn.close()
+                    conn.commit(); cursor.close()
         except:
             with db_lock:
                 conn = get_db_connection(); cursor = conn.cursor()
                 cursor.execute('DELETE FROM chats WHERE chat_id = %s', (row['chat_id'],))
-                conn.commit(); cursor.close(); conn.close()
+                conn.commit(); cursor.close()
     text = f"{EMO_CHAT} <b>Чаты где бот админ</b>\n\n"
     markup = types.InlineKeyboardMarkup(row_width=1)
     if admin_chats:
@@ -4270,7 +4279,7 @@ def del_chat(call):
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('DELETE FROM chats WHERE chat_id = %s', (cid,))
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit(); cursor.close()
     safe_answer(call.id, "✅")
     adm_subscription_management(call)
 
@@ -4282,7 +4291,7 @@ def toggle_subreq(call):
     with db_lock:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute('UPDATE chats SET sub_required = %s WHERE chat_id = %s', (ns, cid))
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit(); cursor.close()
     safe_answer(call.id, "✅")
     adm_subscription_management(call)
 
