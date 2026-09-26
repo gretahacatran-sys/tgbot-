@@ -468,7 +468,37 @@ def init_db():
                 fallback TEXT
             )
         ''')
+        # ============================================================
+        # AUTO-MIGRATION: INTEGER -> BIGINT для всех ID-колонок
+        # ============================================================
+        try:
+            cursor.execute("""
+                SELECT table_name, column_name FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND data_type = 'integer'
+                  AND column_name IN ('user_id','chat_id','added_by','leader_id','clan_id')
+            """)
+            int_cols = cursor.fetchall()
+            for r in int_cols:
+                tbl = r['table_name']
+                col = r['column_name']
+                try:
+                    cursor.execute(f'ALTER TABLE "{tbl}" ALTER COLUMN "{col}" TYPE BIGINT')
+                    print(f"[MIGRATION] {tbl}.{col}: INTEGER -> BIGINT")
+                except Exception as e:
+                    print(f"[MIGRATION FAIL] {tbl}.{col}: {e}")
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            print(f"[MIGRATION skip] {e}")
+        # ============================================================
 
+        cursor.execute(
+            "INSERT INTO moderators (user_id, role, added_by) VALUES (%s, 'owner', %s) ON CONFLICT (user_id) DO NOTHING",
+            (OWNER_ID, OWNER_ID))
+        conn.commit()
+        cursor.close()
+        conn.close()
         cursor.execute(
             "INSERT INTO moderators (user_id, role, added_by) VALUES (%s, 'owner', %s) ON CONFLICT (user_id) DO NOTHING",
             (OWNER_ID, OWNER_ID))
