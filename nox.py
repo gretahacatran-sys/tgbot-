@@ -11,7 +11,7 @@ OWNER_USERNAME = 'NorikAmiri'
 BOT_PHOTO_URL = 'https://ibb.co/jSGN6J2'
 CHAT_LINK = 'https://t.me/Nox_chatik'
 
-# ==== БД ====
+# ==== БД (твоя старая Aiven, ничего не меняется) ====
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgres://avnadmin:AVNS_JUchdhYFhyD2305NNnC@pg-3293e11c-gretahacatran-7546.e.aivencloud.com:28434/defaultdb?sslmode=require"
@@ -308,7 +308,6 @@ def safe_answer(call_id, text=None, show_alert=False):
 # ============================================================
 
 def get_db_connection():
-    """Подключение к PostgreSQL (Aiven) с RealDictCursor."""
     conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
     return conn
 
@@ -316,9 +315,68 @@ def get_db_connection():
 def _get_columns(cursor, table):
     cursor.execute("""
         SELECT column_name FROM information_schema.columns
-        WHERE table_name = %s
+        WHERE table_schema = 'public' AND table_name = %s
     """, (table,))
     return [r['column_name'] for r in cursor.fetchall()]
+
+
+def _constraint_exists(cursor, table, columns):
+    cursor.execute("""
+        SELECT c.contype,
+            (SELECT array_agg(a.attname ORDER BY a.attnum)
+             FROM pg_attribute a
+             WHERE a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)) AS cols
+        FROM pg_constraint c
+        JOIN pg_class t ON c.conrelid = t.oid
+        JOIN pg_namespace n ON t.relnamespace = n.oid
+        WHERE n.nspname = 'public' AND t.relname = %s AND c.contype IN ('p','u')
+    """, (table,))
+    target = set(columns)
+    for row in cursor.fetchall():
+        cols = row['cols']
+        if cols and set(cols) == target:
+            return True
+    return False
+
+
+def _ensure_constraint(cursor, table, columns, kind='unique'):
+    if _constraint_exists(cursor, table, columns):
+        return True
+    cols_str = ', '.join(f'"{c}"' for c in columns)
+    try:
+        if kind == 'pk':
+            cursor.execute(f'ALTER TABLE "{table}" ADD PRIMARY KEY ({cols_str})')
+        else:
+            cursor.execute(f'ALTER TABLE "{table}" ADD UNIQUE ({cols_str})')
+        cursor.connection.commit()
+        print(f"[MIGRATION] {kind.upper()} added: {table}({cols_str})")
+        return True
+    except Exception as e:
+        print(f"[MIGRATION {kind.upper()} fail] {table}({cols_str}): {e}")
+        try:
+            cursor.connection.rollback()
+        except Exception:
+            pass
+        if len(columns) == 1:
+            try:
+                cursor.execute(
+                    f'DELETE FROM "{table}" a USING "{table}" b '
+                    f'WHERE a.ctid < b.ctid AND a."{columns[0]}" = b."{columns[0]}"'
+                )
+                if kind == 'pk':
+                    cursor.execute(f'ALTER TABLE "{table}" ADD PRIMARY KEY ({cols_str})')
+                else:
+                    cursor.execute(f'ALTER TABLE "{table}" ADD UNIQUE ({cols_str})')
+                cursor.connection.commit()
+                print(f"[MIGRATION] {kind.upper()} added after dedup: {table}({cols_str})")
+                return True
+            except Exception as e2:
+                print(f"[MIGRATION {kind.upper()} retry fail] {e2}")
+                try:
+                    cursor.connection.rollback()
+                except Exception:
+                    pass
+        return False
 
 
 def init_db():
@@ -326,7 +384,52 @@ def init_db():
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # users
+        # === STEP 1: INTEGER -> BIGINT ===
+        try:
+            cursor.execute("""
+                SELECT table_name, column_name FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND data_type = 'integer'
+                  AND column_name IN ('user_id','chat_id','added_by','leader_id',
+                                      'clan_id','balance','reward','treasury','max_members')
+            """)
+            rows = cursor.fetchall()
+            for r in rows:
+                tbl = r['table_name']
+                col = r['column_name']
+                try:
+                    cursor.execute(f'ALTER TABLE "{tbl}" ALTER COLUMN "{col}" TYPE BIGINT')
+                    print(f"[MIGRATION] {tbl}.{col}: INTEGER -> BIGINT")
+                except Exception as e:
+                    print(f"[MIGRATION FAIL] {tbl}.{col}: {e}")
+                    try:
+                        cursor.connection.rollback()
+                    except Exception:
+                        pass
+            conn.commit()
+        except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            print(f"[MIGRATION skip] {e}")
+
+        # === STEP 2: устаревшие клан-таблицы ===
+        clans_cols = _get_columns(cursor, 'clans')
+        if clans_cols and 'id' not in clans_cols:
+            cursor.execute('DROP TABLE IF EXISTS clans')
+            cursor.execute('DROP TABLE IF EXISTS clan_members')
+            cursor.execute('DROP TABLE IF EXISTS clan_requests')
+        cm_cols = _get_columns(cursor, 'clan_members')
+        if cm_cols and 'clan_id' not in cm_cols:
+            cursor.execute('DROP TABLE IF EXISTS clan_members')
+            cursor.execute('DROP TABLE IF EXISTS clan_requests')
+        ce_cols = _get_columns(cursor, 'clan_emojis')
+        if ce_cols and 'emoji_id' not in ce_cols:
+            cursor.execute('DROP TABLE IF EXISTS clan_emojis')
+        conn.commit()
+
+        # === STEP 3: CREATE TABLE IF NOT EXISTS ===
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
@@ -403,21 +506,6 @@ def init_db():
                 added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-
-        # миграционные проверки для кланов
-        clans_cols = _get_columns(cursor, 'clans')
-        if clans_cols and 'id' not in clans_cols:
-            cursor.execute('DROP TABLE IF EXISTS clans')
-            cursor.execute('DROP TABLE IF EXISTS clan_members')
-            cursor.execute('DROP TABLE IF EXISTS clan_requests')
-        cm_cols = _get_columns(cursor, 'clan_members')
-        if cm_cols and 'clan_id' not in cm_cols:
-            cursor.execute('DROP TABLE IF EXISTS clan_members')
-            cursor.execute('DROP TABLE IF EXISTS clan_requests')
-        ce_cols = _get_columns(cursor, 'clan_emojis')
-        if ce_cols and 'emoji_id' not in ce_cols:
-            cursor.execute('DROP TABLE IF EXISTS clan_emojis')
-
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS clans (
                 id SERIAL PRIMARY KEY,
@@ -437,7 +525,6 @@ def init_db():
             cursor.execute('ALTER TABLE clans ADD COLUMN leader_crown_id TEXT')
         if 'leader_crown_fallback' not in ccols:
             cursor.execute('ALTER TABLE clans ADD COLUMN leader_crown_fallback TEXT')
-
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS clan_members (
                 clan_id INTEGER,
@@ -468,43 +555,40 @@ def init_db():
                 fallback TEXT
             )
         ''')
-        # ============================================================
-        # AUTO-MIGRATION: INTEGER -> BIGINT для всех ID-колонок
-        # ============================================================
+        conn.commit()
+
+        # === STEP 4: самолечение PK/UNIQUE ===
+        print("[MIGRATION] проверка constraints...")
+        _ensure_constraint(cursor, 'users', ['user_id'], 'pk')
+        _ensure_constraint(cursor, 'moderators', ['user_id'], 'pk')
+        _ensure_constraint(cursor, 'chats', ['chat_id'], 'pk')
+        _ensure_constraint(cursor, 'promos', ['code'], 'pk')
+        _ensure_constraint(cursor, 'game_stats', ['user_id', 'game_type'], 'pk')
+        _ensure_constraint(cursor, 'promo_history', ['code', 'user_id'], 'pk')
+        _ensure_constraint(cursor, 'user_subscriptions', ['user_id', 'chat_id'], 'pk')
+        _ensure_constraint(cursor, 'clan_members', ['clan_id', 'user_id'], 'pk')
+        _ensure_constraint(cursor, 'clan_members', ['user_id'], 'unique')
+        _ensure_constraint(cursor, 'clans', ['name'], 'unique')
+        _ensure_constraint(cursor, 'clan_emojis', ['emoji_id'], 'unique')
+        _ensure_constraint(cursor, 'clan_crowns', ['emoji_id'], 'unique')
+        _ensure_constraint(cursor, 'required_subscriptions', ['chat_id'], 'unique')
+
+        # === STEP 5: владелец ===
         try:
-            cursor.execute("""
-                SELECT table_name, column_name FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND data_type = 'integer'
-                  AND column_name IN ('user_id','chat_id','added_by','leader_id','clan_id')
-            """)
-            int_cols = cursor.fetchall()
-            for r in int_cols:
-                tbl = r['table_name']
-                col = r['column_name']
-                try:
-                    cursor.execute(f'ALTER TABLE "{tbl}" ALTER COLUMN "{col}" TYPE BIGINT')
-                    print(f"[MIGRATION] {tbl}.{col}: INTEGER -> BIGINT")
-                except Exception as e:
-                    print(f"[MIGRATION FAIL] {tbl}.{col}: {e}")
+            cursor.execute(
+                "INSERT INTO moderators (user_id, role, added_by) VALUES (%s, 'owner', %s) ON CONFLICT (user_id) DO NOTHING",
+                (OWNER_ID, OWNER_ID))
             conn.commit()
         except Exception as e:
-            conn.rollback()
-            print(f"[MIGRATION skip] {e}")
-        # ============================================================
+            print(f"[OWNER INSERT FAIL] {e}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
 
-        cursor.execute(
-            "INSERT INTO moderators (user_id, role, added_by) VALUES (%s, 'owner', %s) ON CONFLICT (user_id) DO NOTHING",
-            (OWNER_ID, OWNER_ID))
-        conn.commit()
         cursor.close()
         conn.close()
-        cursor.execute(
-            "INSERT INTO moderators (user_id, role, added_by) VALUES (%s, 'owner', %s) ON CONFLICT (user_id) DO NOTHING",
-            (OWNER_ID, OWNER_ID))
-        conn.commit()
-        cursor.close()
-        conn.close()
+        print("[MIGRATION] init_db завершён успешно")
 
 
 # ---------- КЛАНЫ: ХЕЛПЕРЫ ----------
@@ -5926,5 +6010,5 @@ def cmd_my_clan_final(message):
 
 if __name__ == '__main__':
     init_db()
-    print("🤖 NoxHub запущен! (PostgreSQL)")
+    print("🤖 NoxHub запущен! (PostgreSQL / Aiven)")
     bot.infinity_polling(allowed_updates=['message', 'callback_query', 'chat_member', 'my_chat_member', 'left_chat_member'])
