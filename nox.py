@@ -1,6 +1,8 @@
 import telebot
 from telebot import types
-import sqlite3, random, re, threading, time, datetime, sys, subprocess, os
+import psycopg2
+from psycopg2.extras import RealDictCursor
+import random, re, threading, time, datetime, sys, subprocess, os
 from datetime import timedelta, timezone
 
 API_TOKEN = '8823737566:AAHDmpJlY5xAFxLlO4QeO2GddIpg3Ibz0Hk'
@@ -8,6 +10,12 @@ OWNER_ID = 5825717381
 OWNER_USERNAME = 'NorikAmiri'
 BOT_PHOTO_URL = 'https://ibb.co/jSGN6J2'
 CHAT_LINK = 'https://t.me/Nox_chatik'
+
+# ==== БД ====
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgres://avnadmin:AVNS_JUchdhYFhyD2305NNnC@pg-3293e11c-gretahacatran-7546.e.aivencloud.com:28434/defaultdb?sslmode=require"
+)
 
 bot = telebot.TeleBot(API_TOKEN)
 
@@ -27,7 +35,6 @@ PROMOS_PER_PAGE = 3
 CARD_NUMBER = '2200702140962171'
 CHANNEL_LINK = 'https://t.me/NoxHubs'
 temp_donate = {}
-DB_PATH = 'noxhuub.db'
 CLAN_CREATE_COST = 100000
 CLAN_SLOT_COST = 5000
 CLAN_BASE_SLOTS = 5
@@ -38,6 +45,7 @@ QUICK_BONUS_AMOUNT = 500
 
 BOT_ID_CACHE = {'id': None}
 
+
 def get_bot_id():
     if BOT_ID_CACHE['id'] is None:
         try:
@@ -45,6 +53,7 @@ def get_bot_id():
         except Exception:
             return None
     return BOT_ID_CACHE['id']
+
 
 EMO_PROFILE = '<tg-emoji emoji-id="5416125589012636561">👤</tg-emoji>'
 EMO_DONATE = '<tg-emoji emoji-id="5354968347094062313">💳</tg-emoji>'
@@ -154,6 +163,31 @@ ICO_CLAN_HEADER = '5224575413253274698'
 
 SLOT_EMOJI_MAP = {'🍒': EMO_CHERRY, '🍋': EMO_LEMON, '🍊': EMO_ORANGE, '💎': EMO_DIAMOND}
 
+TG_EMOJI_RE = re.compile(r'<tg-emoji emoji-id="[^"]*">([^<]*)</tg-emoji>')
+
+
+def strip_tg_emoji(text):
+    if not text:
+        return text
+    return TG_EMOJI_RE.sub(r'\1', text)
+
+
+def clean_markup(markup):
+    if not markup:
+        return None
+    try:
+        new_kb = types.InlineKeyboardMarkup(row_width=markup.row_width)
+        for row in markup.keyboard:
+            new_row = []
+            for b in row:
+                cb = getattr(b, 'callback_data', None)
+                url = getattr(b, 'url', None)
+                new_row.append(types.InlineKeyboardButton(text=b.text, callback_data=cb, url=url))
+            new_kb.row(*new_row)
+        return new_kb
+    except Exception:
+        return None
+
 
 def btn(text, callback_data=None, url=None, style=None, icon=None):
     kwargs = {'text': text}
@@ -174,60 +208,89 @@ def btn(text, callback_data=None, url=None, style=None, icon=None):
 
 
 def safe_send(chat_id, text, **kwargs):
-    for attempt in range(3):
-        try:
-            return bot.send_message(chat_id, text, **kwargs)
-        except telebot.apihelper.ApiTelegramException as e:
-            if e.error_code == 429:
-                retry_after = 3
-                try:
-                    if hasattr(e, 'result_json') and e.result_json:
-                        retry_after = e.result_json.get('parameters', {}).get('retry_after', 3)
-                except Exception:
-                    pass
-                print(f"[429] chat={chat_id} waiting {retry_after}s")
-                time.sleep(retry_after + 1)
-                continue
-            else:
-                print(f"[send ERR] chat={chat_id} code={e.error_code}: {e}")
+    try:
+        return bot.send_message(chat_id, text, **kwargs)
+    except telebot.apihelper.ApiTelegramException as e:
+        if e.error_code == 429:
+            retry_after = 3
+            try:
+                if hasattr(e, 'result_json') and e.result_json:
+                    retry_after = e.result_json.get('parameters', {}).get('retry_after', 3)
+            except Exception:
+                pass
+            print(f"[429] chat={chat_id} wait {retry_after}s")
+            time.sleep(retry_after + 1)
+            try:
+                return bot.send_message(chat_id, text, **kwargs)
+            except Exception:
                 return None
-        except Exception as e:
-            print(f"[send EXC] {type(e).__name__}: {e}")
+        elif e.error_code == 400 and 'DOCUMENT_INVALID' in str(e):
+            print(f"[DOC_INVALID] chat={chat_id} -> clean text+markup")
+            clean_text = strip_tg_emoji(text)
+            clean_kb = clean_markup(kwargs.get('reply_markup'))
+            new_kwargs = dict(kwargs)
+            if clean_kb is not None:
+                new_kwargs['reply_markup'] = clean_kb
+            else:
+                new_kwargs.pop('reply_markup', None)
+            try:
+                return bot.send_message(chat_id, clean_text, **new_kwargs)
+            except Exception as ee:
+                print(f"[DOC_INVALID retry fail] {ee}")
+                return None
+        else:
+            print(f"[send ERR] chat={chat_id} code={e.error_code}: {e}")
             return None
-    return None
+    except Exception as e:
+        print(f"[send EXC] {type(e).__name__}: {e}")
+        return None
 
 
 def safe_edit(chat_id, message_id, text, **kwargs):
-    for attempt in range(3):
-        try:
-            return bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, **kwargs)
-        except telebot.apihelper.ApiTelegramException as e:
-            if e.error_code == 429:
-                retry_after = 3
+    try:
+        return bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, **kwargs)
+    except telebot.apihelper.ApiTelegramException as e:
+        if e.error_code == 429:
+            retry_after = 3
+            try:
+                if hasattr(e, 'result_json') and e.result_json:
+                    retry_after = e.result_json.get('parameters', {}).get('retry_after', 3)
+            except Exception:
+                pass
+            print(f"[429 edit] wait {retry_after}s")
+            time.sleep(retry_after + 1)
+            try:
+                return bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, **kwargs)
+            except Exception:
+                return None
+        elif e.error_code == 400 and 'DOCUMENT_INVALID' in str(e):
+            print(f"[DOC_INVALID edit] clean text+markup")
+            clean_text = strip_tg_emoji(text)
+            clean_kb = clean_markup(kwargs.get('reply_markup'))
+            new_kwargs = dict(kwargs)
+            if clean_kb is not None:
+                new_kwargs['reply_markup'] = clean_kb
+            else:
+                new_kwargs.pop('reply_markup', None)
+            try:
+                return bot.edit_message_text(clean_text, chat_id=chat_id, message_id=message_id, **new_kwargs)
+            except Exception:
+                return None
+        elif e.error_code == 400 and ('message is not modified' in str(e) or 'no text in the message' in str(e)):
+            try:
+                return bot.edit_message_caption(caption=text, chat_id=chat_id, message_id=message_id, **kwargs)
+            except Exception:
                 try:
-                    if hasattr(e, 'result_json') and e.result_json:
-                        retry_after = e.result_json.get('parameters', {}).get('retry_after', 3)
+                    bot.delete_message(chat_id, message_id)
                 except Exception:
                     pass
-                print(f"[429 edit] waiting {retry_after}s")
-                time.sleep(retry_after + 1)
-                continue
-            elif e.error_code == 400 and ('message is not modified' in str(e) or 'no text in the message' in str(e)):
-                try:
-                    return bot.edit_message_caption(caption=text, chat_id=chat_id, message_id=message_id, **kwargs)
-                except Exception:
-                    try:
-                        bot.delete_message(chat_id, message_id)
-                    except Exception:
-                        pass
-                    return safe_send(chat_id, text, **kwargs)
-            else:
-                print(f"[edit ERR] code={e.error_code}: {e}")
-                return None
-        except Exception as e:
-            print(f"[edit EXC] {type(e).__name__}: {e}")
+                return safe_send(chat_id, text, **kwargs)
+        else:
+            print(f"[edit ERR] code={e.error_code}: {e}")
             return None
-    return None
+    except Exception as e:
+        print(f"[edit EXC] {type(e).__name__}: {e}")
+        return None
 
 
 def safe_answer(call_id, text=None, show_alert=False):
@@ -240,38 +303,52 @@ def safe_answer(call_id, text=None, show_alert=False):
         pass
 
 
+# ============================================================
+#                     POSTGRESQL СЛОЙ
+# ============================================================
+
 def get_db_connection():
-    conn = sqlite3.connect(DB_PATH, timeout=10)
-    conn.row_factory = sqlite3.Row
+    """Подключение к PostgreSQL (Aiven) с RealDictCursor."""
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
     return conn
+
+
+def _get_columns(cursor, table):
+    cursor.execute("""
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name = %s
+    """, (table,))
+    return [r['column_name'] for r in cursor.fetchall()]
 
 
 def init_db():
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
+
+        # users
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
+                user_id BIGINT PRIMARY KEY,
                 username TEXT,
                 first_name TEXT,
-                balance INTEGER DEFAULT 2000,
+                balance BIGINT DEFAULT 2000,
                 last_bonus INTEGER DEFAULT 0,
                 current_streak INTEGER DEFAULT 0,
                 max_streak INTEGER DEFAULT 0
             )
         ''')
-        cursor.execute("PRAGMA table_info(users)")
-        existing = [col[1] for col in cursor.fetchall()]
+        existing = _get_columns(cursor, 'users')
         if 'banned' not in existing:
             cursor.execute('ALTER TABLE users ADD COLUMN banned INTEGER DEFAULT 0')
         if 'last_bonus_date' not in existing:
             cursor.execute('ALTER TABLE users ADD COLUMN last_bonus_date TEXT DEFAULT NULL')
         if 'last_quick_bonus' not in existing:
             cursor.execute('ALTER TABLE users ADD COLUMN last_quick_bonus TEXT DEFAULT NULL')
+
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS game_stats (
-                user_id INTEGER,
+                user_id BIGINT,
                 game_type TEXT,
                 wins INTEGER DEFAULT 0,
                 losses INTEGER DEFAULT 0,
@@ -281,7 +358,7 @@ def init_db():
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS promos (
                 code TEXT PRIMARY KEY,
-                reward INTEGER,
+                reward BIGINT,
                 max_uses INTEGER,
                 current_uses INTEGER DEFAULT 0
             )
@@ -289,22 +366,22 @@ def init_db():
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS promo_history (
                 code TEXT,
-                user_id INTEGER,
+                user_id BIGINT,
                 activated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (code, user_id)
             )
         ''')
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS chats (
-                chat_id INTEGER PRIMARY KEY,
+                chat_id BIGINT PRIMARY KEY,
                 chat_title TEXT,
                 sub_required INTEGER DEFAULT 0
             )
         ''')
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS required_subscriptions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                chat_id INTEGER UNIQUE,
+                id SERIAL PRIMARY KEY,
+                chat_id BIGINT UNIQUE,
                 type TEXT,
                 link TEXT,
                 title TEXT
@@ -312,89 +389,91 @@ def init_db():
         ''')
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS user_subscriptions (
-                user_id INTEGER,
-                chat_id INTEGER,
+                user_id BIGINT,
+                chat_id BIGINT,
                 confirmed INTEGER DEFAULT 0,
                 PRIMARY KEY (user_id, chat_id)
             )
         ''')
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS moderators (
-                user_id INTEGER PRIMARY KEY,
+                user_id BIGINT PRIMARY KEY,
                 role TEXT DEFAULT 'moderator',
-                added_by INTEGER,
+                added_by BIGINT,
                 added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        cursor.execute("PRAGMA table_info(clans)")
-        cols = [c[1] for c in cursor.fetchall()]
-        if cols and 'id' not in cols:
+
+        # миграционные проверки для кланов
+        clans_cols = _get_columns(cursor, 'clans')
+        if clans_cols and 'id' not in clans_cols:
             cursor.execute('DROP TABLE IF EXISTS clans')
             cursor.execute('DROP TABLE IF EXISTS clan_members')
             cursor.execute('DROP TABLE IF EXISTS clan_requests')
-        cursor.execute("PRAGMA table_info(clan_members)")
-        cols = [c[1] for c in cursor.fetchall()]
-        if cols and 'clan_id' not in cols:
+        cm_cols = _get_columns(cursor, 'clan_members')
+        if cm_cols and 'clan_id' not in cm_cols:
             cursor.execute('DROP TABLE IF EXISTS clan_members')
             cursor.execute('DROP TABLE IF EXISTS clan_requests')
-        cursor.execute("PRAGMA table_info(clan_emojis)")
-        cols = [c[1] for c in cursor.fetchall()]
-        if cols and 'emoji_id' not in cols:
+        ce_cols = _get_columns(cursor, 'clan_emojis')
+        if ce_cols and 'emoji_id' not in ce_cols:
             cursor.execute('DROP TABLE IF EXISTS clan_emojis')
+
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS clans (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 name TEXT UNIQUE,
                 emoji_id TEXT,
                 emoji_fallback TEXT,
                 leader_crown_id TEXT,
                 leader_crown_fallback TEXT,
-                leader_id INTEGER,
-                treasury INTEGER DEFAULT 0,
+                leader_id BIGINT,
+                treasury BIGINT DEFAULT 0,
                 max_members INTEGER DEFAULT 5,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        cursor.execute("PRAGMA table_info(clans)")
-        ccols = [c[1] for c in cursor.fetchall()]
+        ccols = _get_columns(cursor, 'clans')
         if 'leader_crown_id' not in ccols:
             cursor.execute('ALTER TABLE clans ADD COLUMN leader_crown_id TEXT')
         if 'leader_crown_fallback' not in ccols:
             cursor.execute('ALTER TABLE clans ADD COLUMN leader_crown_fallback TEXT')
+
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS clan_members (
                 clan_id INTEGER,
-                user_id INTEGER UNIQUE,
+                user_id BIGINT UNIQUE,
                 joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (clan_id, user_id)
             )
         ''')
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS clan_requests (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 clan_id INTEGER,
-                user_id INTEGER,
+                user_id BIGINT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS clan_emojis (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 emoji_id TEXT UNIQUE,
                 fallback TEXT
             )
         ''')
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS clan_crowns (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 emoji_id TEXT UNIQUE,
                 fallback TEXT
             )
         ''')
+
         cursor.execute(
-            'INSERT OR IGNORE INTO moderators (user_id, role, added_by) VALUES (?, "owner", ?)',
+            "INSERT INTO moderators (user_id, role, added_by) VALUES (%s, 'owner', %s) ON CONFLICT (user_id) DO NOTHING",
             (OWNER_ID, OWNER_ID))
         conn.commit()
+        cursor.close()
         conn.close()
 
 
@@ -408,9 +487,10 @@ def get_user_clan(user_id):
             SELECT c.id, c.name, c.emoji_id, c.emoji_fallback, c.leader_crown_id, c.leader_crown_fallback,
                    c.leader_id, c.treasury, c.max_members
             FROM clans c JOIN clan_members m ON c.id = m.clan_id
-            WHERE m.user_id = ?
+            WHERE m.user_id = %s
         ''', (user_id,))
         row = cursor.fetchone()
+        cursor.close()
         conn.close()
         return dict(row) if row else None
 
@@ -419,8 +499,9 @@ def get_clan_by_id(clan_id):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM clans WHERE id = ?', (clan_id,))
+        cursor.execute('SELECT * FROM clans WHERE id = %s', (clan_id,))
         row = cursor.fetchone()
+        cursor.close()
         conn.close()
         return dict(row) if row else None
 
@@ -429,8 +510,9 @@ def get_clan_by_name(name):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM clans WHERE LOWER(name) = LOWER(?)', (name,))
+        cursor.execute('SELECT * FROM clans WHERE LOWER(name) = LOWER(%s)', (name,))
         row = cursor.fetchone()
+        cursor.close()
         conn.close()
         return dict(row) if row else None
 
@@ -439,8 +521,9 @@ def get_clan_members(clan_id):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT user_id FROM clan_members WHERE clan_id = ? ORDER BY joined_at', (clan_id,))
+        cursor.execute('SELECT user_id FROM clan_members WHERE clan_id = %s ORDER BY joined_at', (clan_id,))
         rows = cursor.fetchall()
+        cursor.close()
         conn.close()
         return [dict(r) for r in rows]
 
@@ -449,8 +532,9 @@ def get_clan_member_count(clan_id):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT COUNT(*) AS c FROM clan_members WHERE clan_id = ?', (clan_id,))
+        cursor.execute('SELECT COUNT(*) AS c FROM clan_members WHERE clan_id = %s', (clan_id,))
         row = cursor.fetchone()
+        cursor.close()
         conn.close()
         return row['c'] if row else 0
 
@@ -461,6 +545,7 @@ def get_all_clans():
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM clans ORDER BY created_at ASC')
         rows = cursor.fetchall()
+        cursor.close()
         conn.close()
         return [dict(r) for r in rows]
 
@@ -469,8 +554,9 @@ def search_clans(query):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM clans WHERE LOWER(name) LIKE LOWER(?) ORDER BY name', (f'%{query}%',))
+        cursor.execute('SELECT * FROM clans WHERE LOWER(name) LIKE LOWER(%s) ORDER BY name', (f'%{query}%',))
         rows = cursor.fetchall()
+        cursor.close()
         conn.close()
         return [dict(r) for r in rows]
 
@@ -481,11 +567,13 @@ def create_clan(name, emoji_id, emoji_fallback, crown_id, crown_fallback, leader
         cursor = conn.cursor()
         cursor.execute('''
             INSERT INTO clans (name, emoji_id, emoji_fallback, leader_crown_id, leader_crown_fallback, leader_id, max_members)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
         ''', (name, emoji_id, emoji_fallback, crown_id, crown_fallback, leader_id, CLAN_BASE_SLOTS))
-        clan_id = cursor.lastrowid
-        cursor.execute('INSERT INTO clan_members (clan_id, user_id) VALUES (?, ?)', (clan_id, leader_id))
+        clan_id = cursor.fetchone()['id']
+        cursor.execute('INSERT INTO clan_members (clan_id, user_id) VALUES (%s, %s)', (clan_id, leader_id))
         conn.commit()
+        cursor.close()
         conn.close()
         return clan_id
 
@@ -494,10 +582,11 @@ def delete_clan(clan_id):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('DELETE FROM clan_members WHERE clan_id = ?', (clan_id,))
-        cursor.execute('DELETE FROM clan_requests WHERE clan_id = ?', (clan_id,))
-        cursor.execute('DELETE FROM clans WHERE id = ?', (clan_id,))
+        cursor.execute('DELETE FROM clan_members WHERE clan_id = %s', (clan_id,))
+        cursor.execute('DELETE FROM clan_requests WHERE clan_id = %s', (clan_id,))
+        cursor.execute('DELETE FROM clans WHERE id = %s', (clan_id,))
         conn.commit()
+        cursor.close()
         conn.close()
 
 
@@ -505,8 +594,11 @@ def add_clan_member(clan_id, user_id):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('INSERT OR IGNORE INTO clan_members (clan_id, user_id) VALUES (?, ?)', (clan_id, user_id))
+        cursor.execute(
+            'INSERT INTO clan_members (clan_id, user_id) VALUES (%s, %s) ON CONFLICT DO NOTHING',
+            (clan_id, user_id))
         conn.commit()
+        cursor.close()
         conn.close()
 
 
@@ -514,8 +606,9 @@ def remove_clan_member(user_id):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('DELETE FROM clan_members WHERE user_id = ?', (user_id,))
+        cursor.execute('DELETE FROM clan_members WHERE user_id = %s', (user_id,))
         conn.commit()
+        cursor.close()
         conn.close()
 
 
@@ -523,8 +616,9 @@ def expand_clan(clan_id):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('UPDATE clans SET max_members = max_members + 1 WHERE id = ?', (clan_id,))
+        cursor.execute('UPDATE clans SET max_members = max_members + 1 WHERE id = %s', (clan_id,))
         conn.commit()
+        cursor.close()
         conn.close()
 
 
@@ -532,8 +626,9 @@ def transfer_clan(clan_id, new_leader_id):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('UPDATE clans SET leader_id = ? WHERE id = ?', (new_leader_id, clan_id))
+        cursor.execute('UPDATE clans SET leader_id = %s WHERE id = %s', (new_leader_id, clan_id))
         conn.commit()
+        cursor.close()
         conn.close()
 
 
@@ -541,12 +636,14 @@ def add_clan_request(clan_id, user_id):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT 1 FROM clan_requests WHERE clan_id = ? AND user_id = ?', (clan_id, user_id))
+        cursor.execute('SELECT 1 FROM clan_requests WHERE clan_id = %s AND user_id = %s', (clan_id, user_id))
         if cursor.fetchone():
+            cursor.close()
             conn.close()
             return False
-        cursor.execute('INSERT INTO clan_requests (clan_id, user_id) VALUES (?, ?)', (clan_id, user_id))
+        cursor.execute('INSERT INTO clan_requests (clan_id, user_id) VALUES (%s, %s)', (clan_id, user_id))
         conn.commit()
+        cursor.close()
         conn.close()
         return True
 
@@ -555,8 +652,9 @@ def remove_clan_request(clan_id, user_id):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('DELETE FROM clan_requests WHERE clan_id = ? AND user_id = ?', (clan_id, user_id))
+        cursor.execute('DELETE FROM clan_requests WHERE clan_id = %s AND user_id = %s', (clan_id, user_id))
         conn.commit()
+        cursor.close()
         conn.close()
 
 
@@ -566,6 +664,7 @@ def get_clan_emojis():
         cursor = conn.cursor()
         cursor.execute('SELECT id, emoji_id, fallback FROM clan_emojis ORDER BY id DESC')
         rows = cursor.fetchall()
+        cursor.close()
         conn.close()
         return [dict(r) for r in rows]
 
@@ -575,12 +674,16 @@ def add_clan_emoji(emoji_id, fallback):
         conn = get_db_connection()
         cursor = conn.cursor()
         try:
-            cursor.execute('INSERT OR IGNORE INTO clan_emojis (emoji_id, fallback) VALUES (?, ?)', (emoji_id, fallback))
+            cursor.execute(
+                'INSERT INTO clan_emojis (emoji_id, fallback) VALUES (%s, %s) ON CONFLICT (emoji_id) DO NOTHING',
+                (emoji_id, fallback))
             conn.commit()
             return cursor.rowcount > 0
         except Exception:
+            conn.rollback()
             return False
         finally:
+            cursor.close()
             conn.close()
 
 
@@ -590,6 +693,7 @@ def clear_clan_emojis():
         cursor = conn.cursor()
         cursor.execute('DELETE FROM clan_emojis')
         conn.commit()
+        cursor.close()
         conn.close()
 
 
@@ -599,6 +703,7 @@ def get_clan_crowns():
         cursor = conn.cursor()
         cursor.execute('SELECT id, emoji_id, fallback FROM clan_crowns ORDER BY id DESC')
         rows = cursor.fetchall()
+        cursor.close()
         conn.close()
         return [dict(r) for r in rows]
 
@@ -608,12 +713,16 @@ def add_clan_crown(emoji_id, fallback):
         conn = get_db_connection()
         cursor = conn.cursor()
         try:
-            cursor.execute('INSERT OR IGNORE INTO clan_crowns (emoji_id, fallback) VALUES (?, ?)', (emoji_id, fallback))
+            cursor.execute(
+                'INSERT INTO clan_crowns (emoji_id, fallback) VALUES (%s, %s) ON CONFLICT (emoji_id) DO NOTHING',
+                (emoji_id, fallback))
             conn.commit()
             return cursor.rowcount > 0
         except Exception:
+            conn.rollback()
             return False
         finally:
+            cursor.close()
             conn.close()
 
 
@@ -623,6 +732,7 @@ def clear_clan_crowns():
         cursor = conn.cursor()
         cursor.execute('DELETE FROM clan_crowns')
         conn.commit()
+        cursor.close()
         conn.close()
 
 
@@ -631,7 +741,8 @@ def render_clan_name(clan):
         return ''
     e = ''
     if clan.get('emoji_id'):
-        e = f'<tg-emoji emoji-id="{clan["emoji_id"]}">{clan.get("emoji_fallback") or "🏰"}</tg-emoji>'
+        fallback = clan.get('emoji_fallback') or '🏰'
+        e = f'<tg-emoji emoji-id="{clan["emoji_id"]}">{fallback}</tg-emoji>'
     return f'{e}<b>{clan["name"]}</b>'
 
 
@@ -639,7 +750,8 @@ def render_leader_crown(clan):
     if not clan:
         return ''
     if clan.get('leader_crown_id'):
-        return f'<tg-emoji emoji-id="{clan["leader_crown_id"]}">{clan.get("leader_crown_fallback") or "👑"}</tg-emoji>'
+        fallback = clan.get('leader_crown_fallback') or '👑'
+        return f'<tg-emoji emoji-id="{clan["leader_crown_id"]}">{fallback}</tg-emoji>'
     return '👑'
 
 
@@ -647,8 +759,9 @@ def get_clean_name(user_id):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT first_name, username FROM users WHERE user_id = ?', (user_id,))
+        cursor.execute('SELECT first_name, username FROM users WHERE user_id = %s', (user_id,))
         row = cursor.fetchone()
+        cursor.close()
         conn.close()
         if row:
             name = (row['first_name'] or '').strip() or (row['username'] or '').strip()
@@ -686,8 +799,9 @@ def get_user_display(user):
             with db_lock:
                 conn = get_db_connection()
                 cursor = conn.cursor()
-                cursor.execute('SELECT first_name, username FROM users WHERE user_id = ?', (user_id,))
+                cursor.execute('SELECT first_name, username FROM users WHERE user_id = %s', (user_id,))
                 row = cursor.fetchone()
+                cursor.close()
                 conn.close()
                 if row:
                     name = (row['first_name'] or '').strip() or (row['username'] or '').strip()
@@ -697,7 +811,8 @@ def get_user_display(user):
         if clan:
             prefix = ''
             if clan.get('emoji_id'):
-                prefix = f'<tg-emoji emoji-id="{clan["emoji_id"]}">{clan.get("emoji_fallback") or "🏰"}</tg-emoji> '
+                fallback = clan.get('emoji_fallback') or '🏰'
+                prefix = f'<tg-emoji emoji-id="{clan["emoji_id"]}">{fallback}</tg-emoji> '
             return f'{prefix}<a href="tg://user?id={user_id}">{name}</a> <b>〘{clan["name"]}〙</b>'
         return f'<a href="tg://user?id={user_id}">{name}</a>'
     except Exception:
@@ -713,34 +828,35 @@ def get_or_create_user(user_id, username, first_name):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
+        cursor.execute('SELECT * FROM users WHERE user_id = %s', (user_id,))
         user = cursor.fetchone()
         if not user:
             cursor.execute('''
                 INSERT INTO users (user_id, username, first_name, balance, banned, last_bonus_date)
-                VALUES (?, ?, ?, ?, 0, NULL)
+                VALUES (%s, %s, %s, %s, 0, NULL)
             ''', (user_id, username, first_name, 2000))
             for game in ['dice', 'rps', 'ttt', 'mines', 'number']:
                 cursor.execute('''
-                    INSERT OR IGNORE INTO game_stats (user_id, game_type, wins, losses)
-                    VALUES (?, ?, 0, 0)
+                    INSERT INTO game_stats (user_id, game_type, wins, losses)
+                    VALUES (%s, %s, 0, 0) ON CONFLICT (user_id, game_type) DO NOTHING
                 ''', (user_id, game))
             conn.commit()
-            cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
+            cursor.execute('SELECT * FROM users WHERE user_id = %s', (user_id,))
             user = cursor.fetchone()
         else:
             if username:
-                cursor.execute('UPDATE users SET username = ? WHERE user_id = ?', (username, user_id))
+                cursor.execute('UPDATE users SET username = %s WHERE user_id = %s', (username, user_id))
             if first_name:
-                cursor.execute('UPDATE users SET first_name = ? WHERE user_id = ?', (first_name, user_id))
+                cursor.execute('UPDATE users SET first_name = %s WHERE user_id = %s', (first_name, user_id))
             for game in ['dice', 'rps', 'ttt', 'mines', 'number']:
                 cursor.execute('''
-                    INSERT OR IGNORE INTO game_stats (user_id, game_type, wins, losses)
-                    VALUES (?, ?, 0, 0)
+                    INSERT INTO game_stats (user_id, game_type, wins, losses)
+                    VALUES (%s, %s, 0, 0) ON CONFLICT (user_id, game_type) DO NOTHING
                 ''', (user_id, game))
             conn.commit()
-            cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
+            cursor.execute('SELECT * FROM users WHERE user_id = %s', (user_id,))
             user = cursor.fetchone()
+        cursor.close()
         conn.close()
         return user
 
@@ -749,8 +865,9 @@ def is_banned(user_id):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT banned FROM users WHERE user_id = ?', (user_id,))
+        cursor.execute('SELECT banned FROM users WHERE user_id = %s', (user_id,))
         row = cursor.fetchone()
+        cursor.close()
         conn.close()
         return row and row['banned'] == 1
 
@@ -761,6 +878,7 @@ def get_all_users():
         cursor = conn.cursor()
         cursor.execute('SELECT user_id, username, first_name, balance FROM users ORDER BY balance DESC')
         rows = cursor.fetchall()
+        cursor.close()
         conn.close()
         return rows
 
@@ -771,6 +889,7 @@ def get_all_chats():
         cursor = conn.cursor()
         cursor.execute('SELECT chat_id, chat_title, sub_required FROM chats')
         rows = cursor.fetchall()
+        cursor.close()
         conn.close()
         return rows
 
@@ -779,9 +898,12 @@ def add_chat(chat_id, title):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('INSERT OR IGNORE INTO chats (chat_id, chat_title) VALUES (?, ?)', (chat_id, title))
-        cursor.execute('UPDATE chats SET chat_title = ? WHERE chat_id = ?', (title, chat_id))
+        cursor.execute(
+            'INSERT INTO chats (chat_id, chat_title) VALUES (%s, %s) ON CONFLICT (chat_id) DO NOTHING',
+            (chat_id, title))
+        cursor.execute('UPDATE chats SET chat_title = %s WHERE chat_id = %s', (title, chat_id))
         conn.commit()
+        cursor.close()
         conn.close()
 
 
@@ -789,8 +911,9 @@ def update_balance(user_id, amount):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (amount, user_id))
+        cursor.execute('UPDATE users SET balance = balance + %s WHERE user_id = %s', (amount, user_id))
         conn.commit()
+        cursor.close()
         conn.close()
 
 
@@ -798,8 +921,9 @@ def set_balance(user_id, amount):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('UPDATE users SET balance = ? WHERE user_id = ?', (amount, user_id))
+        cursor.execute('UPDATE users SET balance = %s WHERE user_id = %s', (amount, user_id))
         conn.commit()
+        cursor.close()
         conn.close()
 
 
@@ -808,10 +932,13 @@ def update_game_stats(user_id, game_type, is_win):
         conn = get_db_connection()
         cursor = conn.cursor()
         if is_win:
-            cursor.execute('UPDATE game_stats SET wins = wins + 1 WHERE user_id = ? AND game_type = ?', (user_id, game_type))
+            cursor.execute('UPDATE game_stats SET wins = wins + 1 WHERE user_id = %s AND game_type = %s',
+                           (user_id, game_type))
         else:
-            cursor.execute('UPDATE game_stats SET losses = losses + 1 WHERE user_id = ? AND game_type = ?', (user_id, game_type))
+            cursor.execute('UPDATE game_stats SET losses = losses + 1 WHERE user_id = %s AND game_type = %s',
+                           (user_id, game_type))
         conn.commit()
+        cursor.close()
         conn.close()
 
 
@@ -820,11 +947,14 @@ def get_all_stats(user_id):
         conn = get_db_connection()
         cursor = conn.cursor()
         for game in ['dice', 'rps', 'ttt', 'mines', 'number']:
-            cursor.execute('INSERT OR IGNORE INTO game_stats (user_id, game_type, wins, losses) VALUES (?, ?, 0, 0)',
-                           (user_id, game))
+            cursor.execute('''
+                INSERT INTO game_stats (user_id, game_type, wins, losses)
+                VALUES (%s, %s, 0, 0) ON CONFLICT (user_id, game_type) DO NOTHING
+            ''', (user_id, game))
         conn.commit()
-        cursor.execute('SELECT * FROM game_stats WHERE user_id = ?', (user_id,))
+        cursor.execute('SELECT * FROM game_stats WHERE user_id = %s', (user_id,))
         rows = cursor.fetchall()
+        cursor.close()
         conn.close()
         stats = {}
         names = {
@@ -851,9 +981,10 @@ def update_streak(user_id, is_win, stake=0):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT current_streak, max_streak FROM users WHERE user_id = ?', (user_id,))
+        cursor.execute('SELECT current_streak, max_streak FROM users WHERE user_id = %s', (user_id,))
         res = cursor.fetchone()
         if not res:
+            cursor.close()
             conn.close()
             return
         current, maximum = res['current_streak'], res['max_streak']
@@ -864,8 +995,10 @@ def update_streak(user_id, is_win, stake=0):
                     maximum = current
         else:
             current = 0
-        cursor.execute('UPDATE users SET current_streak = ?, max_streak = ? WHERE user_id = ?', (current, maximum, user_id))
+        cursor.execute('UPDATE users SET current_streak = %s, max_streak = %s WHERE user_id = %s',
+                       (current, maximum, user_id))
         conn.commit()
+        cursor.close()
         conn.close()
 
 
@@ -881,7 +1014,7 @@ def check_banned(user_id, chat_id):
 def check_pm_game(message):
     if message.chat.type == 'private':
         safe_send(message.chat.id,
-                  f"🎮 <b>Игры доступны только в чате!</b>\n\n"
+                  f"{EMO_SOLO_HEADER} <b>Игры доступны только в чате!</b>\n\n"
                   f"Переходи в наш чат 👉 @Nox_chatik\n"
                   f"Там можно играть со всеми 💪",
                   parse_mode='HTML')
@@ -928,6 +1061,7 @@ def get_required_subscriptions():
         cursor = conn.cursor()
         cursor.execute('SELECT id, chat_id, type, link, title FROM required_subscriptions')
         rows = cursor.fetchall()
+        cursor.close()
         conn.close()
         return [dict(row) for row in rows]
 
@@ -939,17 +1073,22 @@ def add_required_subscription(chat_id, type_, link, title):
         try:
             bot.get_chat(chat_id)
         except Exception as e:
+            cursor.close()
             conn.close()
             raise Exception(f"Не удалось получить информацию о канале/чате: {e}")
         try:
-            cursor.execute('INSERT OR IGNORE INTO required_subscriptions (chat_id, type, link, title) VALUES (?, ?, ?, ?)',
-                           (chat_id, type_, link, title))
-            cursor.execute('DELETE FROM user_subscriptions WHERE chat_id = ?', (chat_id,))
+            cursor.execute('''
+                INSERT INTO required_subscriptions (chat_id, type, link, title)
+                VALUES (%s, %s, %s, %s) ON CONFLICT (chat_id) DO NOTHING
+            ''', (chat_id, type_, link, title))
+            cursor.execute('DELETE FROM user_subscriptions WHERE chat_id = %s', (chat_id,))
             conn.commit()
         except Exception as e:
             conn.rollback()
+            cursor.close()
             conn.close()
             raise Exception(f"Ошибка при добавлении подписки: {e}")
+        cursor.close()
         conn.close()
 
 
@@ -958,17 +1097,19 @@ def remove_required_subscription(sub_id):
         conn = get_db_connection()
         cursor = conn.cursor()
         try:
-            cursor.execute('SELECT chat_id FROM required_subscriptions WHERE id = ?', (sub_id,))
+            cursor.execute('SELECT chat_id FROM required_subscriptions WHERE id = %s', (sub_id,))
             row = cursor.fetchone()
             chat_id = row['chat_id'] if row else None
-            cursor.execute('DELETE FROM required_subscriptions WHERE id = ?', (sub_id,))
+            cursor.execute('DELETE FROM required_subscriptions WHERE id = %s', (sub_id,))
             if chat_id:
-                cursor.execute('DELETE FROM user_subscriptions WHERE chat_id = ?', (chat_id,))
+                cursor.execute('DELETE FROM user_subscriptions WHERE chat_id = %s', (chat_id,))
             conn.commit()
         except Exception as e:
             conn.rollback()
+            cursor.close()
             conn.close()
             raise Exception(f"Ошибка при удалении подписки: {e}")
+        cursor.close()
         conn.close()
 
 
@@ -992,8 +1133,9 @@ def check_required_subscriptions(user_id, chat_id, message_id=None, sender_chat=
         with db_lock:
             conn = get_db_connection()
             cursor = conn.cursor()
-            cursor.execute('SELECT sub_required FROM chats WHERE chat_id = ?', (chat_id,))
+            cursor.execute('SELECT sub_required FROM chats WHERE chat_id = %s', (chat_id,))
             row = cursor.fetchone()
+            cursor.close()
             conn.close()
             if not row or row['sub_required'] == 0:
                 return True
@@ -1008,9 +1150,13 @@ def check_required_subscriptions(user_id, chat_id, message_id=None, sender_chat=
             with db_lock:
                 conn = get_db_connection()
                 cursor = conn.cursor()
-                cursor.execute('INSERT OR REPLACE INTO user_subscriptions (user_id, chat_id, confirmed) VALUES (?, ?, 1)',
-                               (user_id, sub['chat_id']))
+                cursor.execute('''
+                    INSERT INTO user_subscriptions (user_id, chat_id, confirmed)
+                    VALUES (%s, %s, 1)
+                    ON CONFLICT (user_id, chat_id) DO UPDATE SET confirmed = 1
+                ''', (user_id, sub['chat_id']))
                 conn.commit()
+                cursor.close()
                 conn.close()
         else:
             not_confirmed.append(sub)
@@ -1129,8 +1275,9 @@ def handle_left_member(message):
                 with db_lock:
                     conn = get_db_connection()
                     cursor = conn.cursor()
-                    cursor.execute('DELETE FROM chats WHERE chat_id = ?', (message.chat.id,))
+                    cursor.execute('DELETE FROM chats WHERE chat_id = %s', (message.chat.id,))
                     conn.commit()
+                    cursor.close()
                     conn.close()
             except:
                 pass
@@ -1241,24 +1388,28 @@ def process_promo_redeem(message):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM promos WHERE code = ?', (code,))
+        cursor.execute('SELECT * FROM promos WHERE code = %s', (code,))
         promo = cursor.fetchone()
         if not promo:
             safe_send(message.chat.id, f"{EMO_CANCEL} Промокод не найден.", parse_mode='HTML')
+            cursor.close()
             conn.close()
             return
-        cursor.execute('SELECT * FROM promo_history WHERE code = ? AND user_id = ?', (code, user_id))
+        cursor.execute('SELECT * FROM promo_history WHERE code = %s AND user_id = %s', (code, user_id))
         if cursor.fetchone():
             safe_send(message.chat.id, f"{EMO_CANCEL} Уже активирован!", parse_mode='HTML')
+            cursor.close()
             conn.close()
             return
         if promo['current_uses'] >= promo['max_uses']:
             safe_send(message.chat.id, f"{EMO_CANCEL} Лимит исчерпан.", parse_mode='HTML')
+            cursor.close()
             conn.close()
             return
-        cursor.execute('UPDATE promos SET current_uses = current_uses + 1 WHERE code = ?', (code,))
-        cursor.execute('INSERT INTO promo_history (code, user_id) VALUES (?, ?)', (code, user_id))
+        cursor.execute('UPDATE promos SET current_uses = current_uses + 1 WHERE code = %s', (code,))
+        cursor.execute('INSERT INTO promo_history (code, user_id) VALUES (%s, %s)', (code, user_id))
         conn.commit()
+        cursor.close()
         conn.close()
     update_balance(user_id, promo['reward'])
     safe_send(message.chat.id, f"{EMO_PROMO} +{promo['reward']:,} ноксов {EMO_NOX}", parse_mode='HTML')
@@ -1568,9 +1719,10 @@ def quick_bonus_handler(call):
             with db_lock:
                 conn = get_db_connection()
                 cursor = conn.cursor()
-                cursor.execute('UPDATE users SET balance = balance + ?, last_bonus_date = ? WHERE user_id = ?',
+                cursor.execute('UPDATE users SET balance = balance + %s, last_bonus_date = %s WHERE user_id = %s',
                                (bonus, today, user_id))
                 conn.commit()
+                cursor.close()
                 conn.close()
             if jackpot:
                 safe_answer(call.id, f"🎉 ДЖЕКПОТ! +{bonus:,} ноксов!", show_alert=True)
@@ -1588,9 +1740,10 @@ def quick_bonus_handler(call):
             with db_lock:
                 conn = get_db_connection()
                 cursor = conn.cursor()
-                cursor.execute('UPDATE users SET balance = balance + ?, last_quick_bonus = ? WHERE user_id = ?',
+                cursor.execute('UPDATE users SET balance = balance + %s, last_quick_bonus = %s WHERE user_id = %s',
                                (QUICK_BONUS_AMOUNT, now_iso, user_id))
                 conn.commit()
+                cursor.close()
                 conn.close()
             safe_answer(call.id, f"💰 +{QUICK_BONUS_AMOUNT} ноксов!", show_alert=True)
             updated = get_or_create_user(user_id, "", "")
@@ -1822,6 +1975,7 @@ def cmd_top(message):
         cursor = conn.cursor()
         cursor.execute('SELECT user_id, username, first_name, balance FROM users ORDER BY balance DESC LIMIT 10')
         rows = cursor.fetchall()
+        cursor.close()
         conn.close()
     if not rows:
         safe_send(message.chat.id, f"{EMO_CANCEL} Нет пользователей.", parse_mode='HTML')
@@ -1870,11 +2024,9 @@ def build_clans_list_text(page=0):
 
 @bot.message_handler(func=lambda m: m.text and m.text.strip().lower() == 'кланы')
 def cmd_clans(message):
-    print(f"[CLANS] cmd_clans called by {message.from_user.id} in {message.chat.id}")
     try:
         text, markup = build_clans_list_text(0)
         safe_send(message.chat.id, text, parse_mode='HTML', reply_markup=markup)
-        print(f"[CLANS] sent OK")
     except Exception as e:
         print(f"[CLANS CMD ERR] {e}")
         safe_send(message.chat.id, f"{EMO_CANCEL} Ошибка команды кланы: {e}", parse_mode='HTML')
@@ -1900,7 +2052,8 @@ def build_my_clan_text(user_id):
     crown = render_leader_crown(clan)
     emoji_prefix = ''
     if clan.get('emoji_id'):
-        emoji_prefix = f'<tg-emoji emoji-id="{clan["emoji_id"]}">{clan.get("emoji_fallback") or "🏰"}</tg-emoji>'
+        fallback = clan.get('emoji_fallback') or '🏰'
+        emoji_prefix = f'<tg-emoji emoji-id="{clan["emoji_id"]}">{fallback}</tg-emoji>'
     text = f"{emoji_prefix}<b>{clan['name']}</b>\n"
     text += f"{crown} Лидер: {get_user_display_by_id(clan['leader_id'])}\n"
     text += f"👥 Участники: {len(members)}/{clan['max_members']}\n"
@@ -1917,11 +2070,9 @@ def build_my_clan_text(user_id):
 
 @bot.message_handler(func=lambda m: m.text and m.text.strip().lower() in ('клан', 'мой клан'))
 def cmd_my_clan(message):
-    print(f"[MYCLAN] cmd_my_clan called by {message.from_user.id} in {message.chat.id}")
     try:
         text, markup = build_my_clan_text(message.from_user.id)
         safe_send(message.chat.id, text, parse_mode='HTML', reply_markup=markup)
-        print(f"[MYCLAN] sent OK")
     except Exception as e:
         print(f"[MYCLAN ERR] {e}")
         safe_send(message.chat.id, f"{EMO_CANCEL} Ошибка: {e}", parse_mode='HTML')
@@ -2008,8 +2159,9 @@ def clan_emoji_pick(call):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT emoji_id, fallback FROM clan_emojis WHERE id = ?', (emoji_row_id,))
+        cursor.execute('SELECT emoji_id, fallback FROM clan_emojis WHERE id = %s', (emoji_row_id,))
         row = cursor.fetchone()
+        cursor.close()
         conn.close()
     if not row:
         safe_answer(call.id, "❌ Символ не найден", show_alert=True)
@@ -2079,8 +2231,9 @@ def clan_crown_pick(call):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT emoji_id, fallback FROM clan_crowns WHERE id = ?', (crown_row_id,))
+        cursor.execute('SELECT emoji_id, fallback FROM clan_crowns WHERE id = %s', (crown_row_id,))
         row = cursor.fetchone()
+        cursor.close()
         conn.close()
     if not row:
         safe_answer(call.id, "❌ Корона не найдена", show_alert=True)
@@ -2147,7 +2300,8 @@ def clan_info_cb(call):
     crown = render_leader_crown(clan)
     emoji_prefix = ''
     if clan.get('emoji_id'):
-        emoji_prefix = f'<tg-emoji emoji-id="{clan["emoji_id"]}">{clan.get("emoji_fallback") or "🏰"}</tg-emoji>'
+        fallback = clan.get('emoji_fallback') or '🏰'
+        emoji_prefix = f'<tg-emoji emoji-id="{clan["emoji_id"]}">{fallback}</tg-emoji>'
     text = f"{emoji_prefix}<b>{clan['name']}</b>\n"
     text += f"{crown} Лидер: {get_user_display_by_id(clan['leader_id'])}\n"
     text += f"👥 Участники: {members_count}/{clan['max_members']}\n"
@@ -2217,7 +2371,8 @@ def clan_join_cb(call):
     crown = render_leader_crown(clan)
     emoji_prefix = ''
     if clan.get('emoji_id'):
-        emoji_prefix = f'<tg-emoji emoji-id="{clan["emoji_id"]}">{clan.get("emoji_fallback") or "🏰"}</tg-emoji>'
+        fallback = clan.get('emoji_fallback') or '🏰'
+        emoji_prefix = f'<tg-emoji emoji-id="{clan["emoji_id"]}">{fallback}</tg-emoji>'
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
         btn("🟢 Подтвердить", callback_data=f"clan_req_ok_{clan_id}_{user_id}", style='success'),
@@ -2304,7 +2459,8 @@ def clan_members_cb(call):
     crown = render_leader_crown(clan)
     emoji_prefix = ''
     if clan.get('emoji_id'):
-        emoji_prefix = f'<tg-emoji emoji-id="{clan["emoji_id"]}">{clan.get("emoji_fallback") or "🏰"}</tg-emoji>'
+        fallback = clan.get('emoji_fallback') or '🏰'
+        emoji_prefix = f'<tg-emoji emoji-id="{clan["emoji_id"]}">{fallback}</tg-emoji>'
     text = f"{emoji_prefix}<b>{clan['name']}</b>\n"
     text += f"👥 {len(members)}/{clan['max_members']}\n\n"
     text += f"{crown} <b>Лидер:</b>\n"
@@ -2456,7 +2612,8 @@ def clan_disband_cb(call):
         return
     emoji_prefix = ''
     if clan.get('emoji_id'):
-        emoji_prefix = f'<tg-emoji emoji-id="{clan["emoji_id"]}">{clan.get("emoji_fallback") or "🏰"}</tg-emoji>'
+        fallback = clan.get('emoji_fallback') or '🏰'
+        emoji_prefix = f'<tg-emoji emoji-id="{clan["emoji_id"]}">{fallback}</tg-emoji>'
     members_count = get_clan_member_count(clan_id)
     text = (
         f"⚠️ <b>РАСПУСТИТЬ КЛАН?</b>\n\n"
@@ -2544,8 +2701,9 @@ def is_moderator(user_id):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT 1 FROM moderators WHERE user_id = ?', (user_id,))
+        cursor.execute('SELECT 1 FROM moderators WHERE user_id = %s', (user_id,))
         row = cursor.fetchone()
+        cursor.close()
         conn.close()
         return row is not None
 
@@ -2586,8 +2744,9 @@ def cmd_ban_user(message):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('UPDATE users SET banned = 1 WHERE user_id = ?', (tid,))
+        cursor.execute('UPDATE users SET banned = 1 WHERE user_id = %s', (tid,))
         conn.commit()
+        cursor.close()
         conn.close()
     safe_send(message.chat.id, f"{EMO_SAFE} Пользователь {get_user_display_by_id(tid)} забанен.", parse_mode='HTML')
 
@@ -2603,8 +2762,9 @@ def cmd_unban_user(message):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('UPDATE users SET banned = 0 WHERE user_id = ?', (tid,))
+        cursor.execute('UPDATE users SET banned = 0 WHERE user_id = %s', (tid,))
         conn.commit()
+        cursor.close()
         conn.close()
     safe_send(message.chat.id, f"{EMO_SAFE} Пользователь {get_user_display_by_id(tid)} разбанен.", parse_mode='HTML')
 
@@ -2698,8 +2858,9 @@ def show_moderators(message):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT user_id, role FROM moderators ORDER BY CASE WHEN role = "owner" THEN 0 ELSE 1 END')
+        cursor.execute("SELECT user_id, role FROM moderators ORDER BY CASE WHEN role = 'owner' THEN 0 ELSE 1 END")
         rows = cursor.fetchall()
+        cursor.close()
         conn.close()
     if not rows:
         safe_send(message.chat.id, f"{EMO_CANCEL} Пусто.", parse_mode='HTML')
@@ -2851,8 +3012,11 @@ def cmd_promote_moderator(message):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('INSERT OR IGNORE INTO moderators (user_id, role, added_by) VALUES (?, "moderator", ?)', (target_id, OWNER_ID))
+        cursor.execute(
+            "INSERT INTO moderators (user_id, role, added_by) VALUES (%s, 'moderator', %s) ON CONFLICT (user_id) DO NOTHING",
+            (target_id, OWNER_ID))
         conn.commit()
+        cursor.close()
         conn.close()
     safe_send(message.chat.id, f"{EMO_SAFE} {get_user_display_by_id(target_id)} теперь модератор!", parse_mode='HTML')
 
@@ -2867,8 +3031,9 @@ def cmd_demote_moderator(message):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('DELETE FROM moderators WHERE user_id = ? AND role != "owner"', (target_id,))
+        cursor.execute("DELETE FROM moderators WHERE user_id = %s AND role != 'owner'", (target_id,))
         conn.commit()
+        cursor.close()
         conn.close()
     safe_send(message.chat.id, f"{EMO_SAFE} {get_user_display_by_id(target_id)} больше не модератор.", parse_mode='HTML')
 
@@ -3419,13 +3584,13 @@ def cmd_roulette_game(message):
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Принять", callback_data=f"join_roulette_{message.from_user.id}_{target_id}_{stake}_{message.message_id}", style='success', icon=ICO_ACCEPT))
         markup.add(btn("Отмена", callback_data=f"cancel_invite_{message.message_id}", style='danger', icon=ICO_CANCEL))
-        safe_send(message.chat.id, f"🔫 {user_display} вызывает {target_display}!\n🎮 Игра: Русская рулетка\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
+        safe_send(message.chat.id, f"{EMO_ROULETTE} {user_display} вызывает {target_display}!\n{EMO_SOLO_HEADER} Игра: Русская рулетка\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
         invites[message.message_id] = {'host_id': message.from_user.id, 'game_type': 'roulette', 'stake': stake, 'chat_id': message.chat.id}
     else:
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Принять вызов", callback_data=f"join_roulette_open_{message.from_user.id}_{stake}_{message.message_id}", style='success', icon=ICO_ACCEPT))
         markup.add(btn("Отмена", callback_data=f"cancel_invite_{message.message_id}", style='danger', icon=ICO_CANCEL))
-        safe_send(message.chat.id, f"🔫 {user_display} ищет соперника!\n🎮 Игра: Русская рулетка\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
+        safe_send(message.chat.id, f"{EMO_ROULETTE} {user_display} ищет соперника!\n{EMO_SOLO_HEADER} Игра: Русская рулетка\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
         invites[message.message_id] = {'host_id': message.from_user.id, 'game_type': 'roulette', 'stake': stake, 'chat_id': message.chat.id}
 
 
@@ -3437,7 +3602,7 @@ def start_roulette_match(chat_id, p1, p2, stake):
     p2d = get_user_display(p2)
     gd = {'p1_id': p1['user_id'], 'p2_id': p2['user_id'], 'stake': stake, 'current_turn': ct,
           'shot_count': 0, 'finished': False, 'chat_id': chat_id}
-    msg = safe_send(chat_id, f"🔫 РУЛЕТКА!\n{p1d} {EMO_VS} {p2d}\n{EMO_NOX} {stake:,}\nХодит: {get_user_display_by_id(ct)}", parse_mode='HTML')
+    msg = safe_send(chat_id, f"{EMO_ROULETTE} РУЛЕТКА!\n{p1d} {EMO_VS} {p2d}\n{EMO_NOX} {stake:,}\nХодит: {get_user_display_by_id(ct)}", parse_mode='HTML')
     if not msg:
         return
     gmid = msg.message_id
@@ -3445,7 +3610,7 @@ def start_roulette_match(chat_id, p1, p2, stake):
     active_games[chat_id][gmid] = gd
     markup = types.InlineKeyboardMarkup()
     markup.add(btn("ВЫСТРЕЛИТЬ", callback_data=f"roulette_shoot_{gmid}_{ct}", style='danger', icon=ICO_ROULETTE))
-    safe_edit(chat_id, gmid, f"🔫 РУЛЕТКА!\n{p1d} {EMO_VS} {p2d}\n{EMO_NOX} {stake:,}\nХодит: {get_user_display_by_id(ct)}", reply_markup=markup, parse_mode='HTML')
+    safe_edit(chat_id, gmid, f"{EMO_ROULETTE} РУЛЕТКА!\n{p1d} {EMO_VS} {p2d}\n{EMO_NOX} {stake:,}\nХодит: {get_user_display_by_id(ct)}", reply_markup=markup, parse_mode='HTML')
     start_timer(chat_id, gmid, game_type='roulette', timeout=60)
 
 
@@ -3486,7 +3651,7 @@ def roulette_shoot(call):
         nd = get_user_display_by_id(g['current_turn'])
         markup = types.InlineKeyboardMarkup()
         markup.add(btn("ВЫСТРЕЛИТЬ", callback_data=f"roulette_shoot_{gmid}_{g['current_turn']}", style='danger', icon=ICO_ROULETTE))
-        safe_edit(cid, gmid, f"🔫\n{EMO_NOX} {g['stake']:,}\nВыстрел {g['shot_count']}\nХодит: {nd}", reply_markup=markup, parse_mode='HTML')
+        safe_edit(cid, gmid, f"{EMO_ROULETTE}\n{EMO_NOX} {g['stake']:,}\nВыстрел {g['shot_count']}\nХодит: {nd}", reply_markup=markup, parse_mode='HTML')
         start_timer(cid, gmid, game_type='roulette', timeout=60)
 
 
@@ -3612,14 +3777,14 @@ def cmd_eagle_game(message):
                 btn("Принять", callback_data=f"join_eg_dir:{user['user_id']}:{target_id}:{stake}", style='success', icon=ICO_ACCEPT),
                 btn("Отмена", callback_data=f"cancel_eg:{user['user_id']}", style='danger', icon=ICO_CANCEL)
             )
-            msg = safe_send(message.chat.id, f"🪙 {user_display} вызывает {target_display}!\n🎮 Игра: Орёл/Решка\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
+            msg = safe_send(message.chat.id, f"{EMO_EAGLE} {user_display} вызывает {target_display}!\n{EMO_SOLO_HEADER} Игра: Орёл/Решка\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
         else:
             markup = types.InlineKeyboardMarkup(row_width=2)
             markup.add(
                 btn("Принять", callback_data=f"join_eg_open:{user['user_id']}:{stake}", style='success', icon=ICO_ACCEPT),
                 btn("Отмена", callback_data=f"cancel_eg:{user['user_id']}", style='danger', icon=ICO_CANCEL)
             )
-            msg = safe_send(message.chat.id, f"🪙 {user_display} ищет соперника!\n🎮 Игра: Орёл/Решка\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
+            msg = safe_send(message.chat.id, f"{EMO_EAGLE} {user_display} ищет соперника!\n{EMO_SOLO_HEADER} Игра: Орёл/Решка\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
         if msg:
             with invite_lock:
                 invites[msg.message_id] = {'host_id': user['user_id'], 'game_type': 'eagle', 'stake': stake, 'chat_id': message.chat.id}
@@ -3703,7 +3868,7 @@ def start_eagle_duel(call, hid, gid, stake):
         btn("Решка", callback_data=f"egch:{game_id}:2", style='success', icon=ICO_EAGLE)
     )
     safe_edit(call.message.chat.id, call.message.message_id,
-              f"🪙 Орёл/Решка!\n{EMO_NOX} {stake:,}\n🎯 {cd} ВЫБИРАЕТ\n🤔 {gd} УГАДЫВАЕТ",
+              f"{EMO_EAGLE} Орёл/Решка!\n{EMO_NOX} {stake:,}\n🎯 {cd} ВЫБИРАЕТ\n🤔 {gd} УГАДЫВАЕТ",
               parse_mode='HTML', reply_markup=markup)
     if call.message.chat.id not in active_games:
         active_games[call.message.chat.id] = {}
@@ -3740,7 +3905,7 @@ def eagle_choose(call):
         btn("Орёл", callback_data=f"eggs:{ggid}:1", style='primary', icon=ICO_EAGLE),
         btn("Решка", callback_data=f"eggs:{ggid}:2", style='success', icon=ICO_EAGLE)
     )
-    safe_edit(cid, g['msg_id'], f"🪙 {cd} загадал!\n🤔 {gd} угадай!", parse_mode='HTML', reply_markup=markup)
+    safe_edit(cid, g['msg_id'], f"{EMO_EAGLE} {cd} загадал!\n🤔 {gd} угадай!", parse_mode='HTML', reply_markup=markup)
     c_id, gs_id, st, mid = g['chooser_id'], g['guesser_id'], g['stake'], g['msg_id']
     del active_games[cid][gid]
     active_games[cid][ggid] = {
@@ -3781,7 +3946,7 @@ def eagle_guess(call):
     update_streak(lid, False, st)
     update_game_stats(wid, 'eagle', True)
     update_game_stats(lid, 'eagle', False)
-    safe_edit(cid, g['msg_id'], f"🪙 <b>РЕЗУЛЬТАТ:</b>\n\n{txt}\n\n{EMO_CROWN} {get_user_display_by_id(wid)} +{st:,} ноксов {EMO_NOX}!", parse_mode='HTML', reply_markup=None)
+    safe_edit(cid, g['msg_id'], f"{EMO_EAGLE} <b>РЕЗУЛЬТАТ:</b>\n\n{txt}\n\n{EMO_CROWN} {get_user_display_by_id(wid)} +{st:,} ноксов {EMO_NOX}!", parse_mode='HTML', reply_markup=None)
     remove_player_from_game(wid)
     remove_player_from_game(lid)
     if cid in active_games and gid in active_games[cid]:
@@ -3839,13 +4004,13 @@ def cmd_dice_game(message):
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Принять", callback_data=f"join_dice_{message.from_user.id}_{target_id}_{stake}_{message.message_id}", style='success', icon=ICO_ACCEPT))
         markup.add(btn("Отмена", callback_data=f"cancel_invite_{message.message_id}", style='danger', icon=ICO_CANCEL))
-        safe_send(message.chat.id, f"🎲 {user_display} вызывает {target_display}!\n🎮 Игра: Кости 1на1\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
+        safe_send(message.chat.id, f"{EMO_DICE} {user_display} вызывает {target_display}!\n{EMO_SOLO_HEADER} Игра: Кости 1на1\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
         invites[message.message_id] = {'host_id': message.from_user.id, 'game_type': 'dice', 'stake': stake, 'chat_id': message.chat.id}
     else:
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Принять", callback_data=f"join_dice_open_{message.from_user.id}_{stake}_{message.message_id}", style='success', icon=ICO_ACCEPT))
         markup.add(btn("Отмена", callback_data=f"cancel_invite_{message.message_id}", style='danger', icon=ICO_CANCEL))
-        safe_send(message.chat.id, f"🎲 {user_display} ищет соперника!\n🎮 Игра: Кости 1на1\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
+        safe_send(message.chat.id, f"{EMO_DICE} {user_display} ищет соперника!\n{EMO_SOLO_HEADER} Игра: Кости 1на1\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
         invites[message.message_id] = {'host_id': message.from_user.id, 'game_type': 'dice', 'stake': stake, 'chat_id': message.chat.id}
 
 
@@ -4003,13 +4168,13 @@ def cmd_rps_game(message):
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Принять", callback_data=f"join_rps_{message.from_user.id}_{target_id}_{stake}_{message.message_id}", style='success', icon=ICO_ACCEPT))
         markup.add(btn("Отмена", callback_data=f"cancel_invite_{message.message_id}", style='danger', icon=ICO_CANCEL))
-        safe_send(message.chat.id, f"🪨 {user_display} вызывает {target_display}!\n🎮 Игра: Камень-Ножницы-Бумага\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
+        safe_send(message.chat.id, f"{EMO_ROCK} {user_display} вызывает {target_display}!\n{EMO_SOLO_HEADER} Игра: Камень-Ножницы-Бумага\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
         invites[message.message_id] = {'host_id': message.from_user.id, 'game_type': 'rps', 'stake': stake, 'chat_id': message.chat.id}
     else:
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Принять", callback_data=f"join_rps_open_{message.from_user.id}_{stake}_{message.message_id}", style='success', icon=ICO_ACCEPT))
         markup.add(btn("Отмена", callback_data=f"cancel_invite_{message.message_id}", style='danger', icon=ICO_CANCEL))
-        safe_send(message.chat.id, f"🪨 {user_display} ищет соперника!\n🎮 Игра: Камень-Ножницы-Бумага\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
+        safe_send(message.chat.id, f"{EMO_ROCK} {user_display} ищет соперника!\n{EMO_SOLO_HEADER} Игра: Камень-Ножницы-Бумага\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
         invites[message.message_id] = {'host_id': message.from_user.id, 'game_type': 'rps', 'stake': stake, 'chat_id': message.chat.id}
 
 
@@ -4221,13 +4386,13 @@ def cmd_ttt_game(message):
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Принять", callback_data=f"join_ttt_{message.from_user.id}_{target_id}_{stake}_{message.message_id}", style='success', icon=ICO_ACCEPT))
         markup.add(btn("Отмена", callback_data=f"cancel_invite_{message.message_id}", style='danger', icon=ICO_CANCEL))
-        safe_send(message.chat.id, f"❌ {user_display} вызывает {target_display}!\n🎮 Игра: Крестики-Нолики 3х3\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
+        safe_send(message.chat.id, f"{EMO_TTT_X} {user_display} вызывает {target_display}!\n{EMO_TTT_INVITE} Игра: Крестики-Нолики 3х3\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
         invites[message.message_id] = {'host_id': message.from_user.id, 'game_type': 'ttt', 'stake': stake, 'chat_id': message.chat.id}
     else:
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Принять", callback_data=f"join_ttt_open_{message.from_user.id}_{stake}_{message.message_id}", style='success', icon=ICO_ACCEPT))
         markup.add(btn("Отмена", callback_data=f"cancel_invite_{message.message_id}", style='danger', icon=ICO_CANCEL))
-        safe_send(message.chat.id, f"❌ {user_display} ищет соперника!\n🎮 Игра: Крестики-Нолики 3х3\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
+        safe_send(message.chat.id, f"{EMO_TTT_X} {user_display} ищет соперника!\n{EMO_TTT_INVITE} Игра: Крестики-Нолики 3х3\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
         invites[message.message_id] = {'host_id': message.from_user.id, 'game_type': 'ttt', 'stake': stake, 'chat_id': message.chat.id}
 
 
@@ -4251,7 +4416,7 @@ def start_ttt_match(cid, p1, p2, stake):
         first = random.choice(['X', 'O'])
         fd = p1d if first == 'X' else p2d
         extra = "(равно)"
-    msg = safe_send(cid, "🎮 Поле...")
+    msg = safe_send(cid, f"{EMO_TTT_INVITE} Поле...")
     if not msg:
         return
     active_games[cid] = active_games.get(cid, {})
@@ -4502,13 +4667,13 @@ def cmd_mines_game(message):
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Принять", callback_data=f"join_mines_{message.from_user.id}_{target_id}_{stake}_{message.message_id}", style='success', icon=ICO_ACCEPT))
         markup.add(btn("Отмена", callback_data=f"cancel_invite_{message.message_id}", style='danger', icon=ICO_CANCEL))
-        safe_send(message.chat.id, f"💣 {user_display} вызывает {target_display}!\n🎮 Игра: Минное поле 5x5\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
+        safe_send(message.chat.id, f"{EMO_MINE} {user_display} вызывает {target_display}!\n{EMO_SOLO_HEADER} Игра: Минное поле 5x5\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
         invites[message.message_id] = {'host_id': message.from_user.id, 'game_type': 'mines', 'stake': stake, 'chat_id': message.chat.id}
     else:
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Принять", callback_data=f"join_mines_open_{message.from_user.id}_{stake}_{message.message_id}", style='success', icon=ICO_ACCEPT))
         markup.add(btn("Отмена", callback_data=f"cancel_invite_{message.message_id}", style='danger', icon=ICO_CANCEL))
-        safe_send(message.chat.id, f"💣 {user_display} ищет соперника!\n🎮 Игра: Минное поле 5x5\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
+        safe_send(message.chat.id, f"{EMO_MINE} {user_display} ищет соперника!\n{EMO_SOLO_HEADER} Игра: Минное поле 5x5\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
         invites[message.message_id] = {'host_id': message.from_user.id, 'game_type': 'mines', 'stake': stake, 'chat_id': message.chat.id}
 
 
@@ -4535,7 +4700,7 @@ def start_mines_match(cid, p1, p2, stake):
         fp = random.choice([1, 2])
         fd = p1d if fp == 1 else p2d
         extra = "(равно)"
-    msg = safe_send(cid, f"💣 Минное поле 5x5", parse_mode='HTML')
+    msg = safe_send(cid, f"{EMO_MINE} Минное поле 5x5", parse_mode='HTML')
     if not msg:
         return
     active_games[cid] = active_games.get(cid, {})
@@ -4544,7 +4709,7 @@ def start_mines_match(cid, p1, p2, stake):
         'turn': fp, 'stake': stake, 'game_type': 'mines', 'finished': False, 'processing': False,
         'chat_id': cid, 'msg_id': msg.message_id
     }
-    safe_edit(cid, msg.message_id, f"💣\n{p1d} {EMO_VS} {p2d}\n{EMO_NOX} {stake:,} | {fd} {extra}", reply_markup=gen_mines_board(board, msg.message_id), parse_mode='HTML')
+    safe_edit(cid, msg.message_id, f"{EMO_MINE}\n{p1d} {EMO_VS} {p2d}\n{EMO_NOX} {stake:,} | {fd} {extra}", reply_markup=gen_mines_board(board, msg.message_id), parse_mode='HTML')
     start_timer(cid, msg.message_id, game_type='mines', timeout=60)
 
 
@@ -4608,7 +4773,7 @@ def click_mines(call):
             update_streak(lid, False, g['stake'])
             update_game_stats(wid, 'mines', True)
             update_game_stats(lid, 'mines', False)
-            safe_edit(cid, mid, f"💣 {get_user_display_by_id(lid)} на мине!\n{EMO_CROWN} {get_user_display_by_id(wid)} +{wa - g['stake']:,} ноксов {EMO_NOX}!", reply_markup=gen_mines_final(g['mines']), parse_mode='HTML')
+            safe_edit(cid, mid, f"{EMO_MINE} {get_user_display_by_id(lid)} на мине!\n{EMO_CROWN} {get_user_display_by_id(wid)} +{wa - g['stake']:,} ноксов {EMO_NOX}!", reply_markup=gen_mines_final(g['mines']), parse_mode='HTML')
             del active_games[cid][mid]
             remove_player_from_game(wid)
             remove_player_from_game(lid)
@@ -4627,7 +4792,7 @@ def click_mines(call):
             else:
                 g['turn'] = 2 if g['turn'] == 1 else 1
                 nid = g['p1_id'] if g['turn'] == 1 else g['p2_id']
-                safe_edit(cid, mid, f"💣\n{EMO_NOX} {g['stake']:,} | {get_user_display_by_id(nid)}", reply_markup=gen_mines_board(g['board'], mid), parse_mode='HTML')
+                safe_edit(cid, mid, f"{EMO_MINE}\n{EMO_NOX} {g['stake']:,} | {get_user_display_by_id(nid)}", reply_markup=gen_mines_board(g['board'], mid), parse_mode='HTML')
                 start_timer(cid, mid, game_type='mines', timeout=60)
     except Exception as e:
         print(f"[MINES] {e}")
@@ -4787,13 +4952,13 @@ def cmd_number_game(message):
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Принять", callback_data=f"join_number_{message.from_user.id}_{target_id}_{mx}_{stake}_{message.message_id}", style='success', icon=ICO_ACCEPT))
         markup.add(btn("Отмена", callback_data=f"cancel_invite_{message.message_id}", style='danger', icon=ICO_CANCEL))
-        safe_send(message.chat.id, f"🔢 {user_display} вызывает {target_display}!\n🎮 Игра: Угадай число (1-{mx})\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
+        safe_send(message.chat.id, f"{EMO_NUMBER} {user_display} вызывает {target_display}!\n{EMO_SOLO_HEADER} Игра: Угадай число (1-{mx})\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
         invites[message.message_id] = {'host_id': message.from_user.id, 'game_type': 'number', 'stake': stake, 'chat_id': message.chat.id, 'max_num': mx}
     else:
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Принять", callback_data=f"join_number_open_{message.from_user.id}_{mx}_{stake}_{message.message_id}", style='success', icon=ICO_ACCEPT))
         markup.add(btn("Отмена", callback_data=f"cancel_invite_{message.message_id}", style='danger', icon=ICO_CANCEL))
-        safe_send(message.chat.id, f"🔢 {user_display} ищет соперника!\n🎮 Игра: Угадай число (1-{mx})\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
+        safe_send(message.chat.id, f"{EMO_NUMBER} {user_display} ищет соперника!\n{EMO_SOLO_HEADER} Игра: Угадай число (1-{mx})\n{EMO_NOX} Ставка: <b>{stake:,}</b>", parse_mode='HTML', reply_markup=markup)
         invites[message.message_id] = {'host_id': message.from_user.id, 'game_type': 'number', 'stake': stake, 'chat_id': message.chat.id, 'max_num': mx}
 
 
@@ -4812,7 +4977,7 @@ def start_number_match(cid, p1, p2, mx, stake):
     else:
         turn = random.choice([p1['user_id'], p2['user_id']])
         td = p1d if turn == p1['user_id'] else p2d
-    msg = safe_send(cid, f"🔢 Игра!\n{p1d} {EMO_VS} {p2d}\n1-{mx}\n{EMO_NOX} {stake:,}\nХодит: {td}", parse_mode='HTML')
+    msg = safe_send(cid, f"{EMO_NUMBER} Игра!\n{p1d} {EMO_VS} {p2d}\n1-{mx}\n{EMO_NOX} {stake:,}\nХодит: {td}", parse_mode='HTML')
     if not msg:
         return
     active_games[cid] = active_games.get(cid, {})
@@ -5258,8 +5423,13 @@ def process_promo_create(message):
         with db_lock:
             conn = get_db_connection()
             cur = conn.cursor()
-            cur.execute('INSERT OR REPLACE INTO promos (code, reward, max_uses, current_uses) VALUES (?, ?, ?, 0)', (code, rw, mx))
+            cur.execute('''
+                INSERT INTO promos (code, reward, max_uses, current_uses)
+                VALUES (%s, %s, %s, 0)
+                ON CONFLICT (code) DO UPDATE SET reward = EXCLUDED.reward, max_uses = EXCLUDED.max_uses, current_uses = 0
+            ''', (code, rw, mx))
             conn.commit()
+            cur.close()
             conn.close()
         safe_send(message.chat.id, f"{EMO_SAFE} Промокод: <code>{code}</code>\n💰 Награда: <b>{rw:,}</b>\n👥 Активаций: <b>{mx}</b>", parse_mode='HTML')
     except Exception:
@@ -5325,12 +5495,12 @@ def adm_promo_history(call):
     try:
         with db_lock:
             conn = get_db_connection()
-            conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute('SELECT code, reward, max_uses, current_uses FROM promos ORDER BY code DESC')
             all_promos = cursor.fetchall()
             if not all_promos:
                 safe_send(call.message.chat.id, f"{EMO_CANCEL} Промокодов нет.", parse_mode='HTML')
+                cursor.close()
                 conn.close()
                 return
             total_pages = (len(all_promos) + PROMOS_PER_PAGE - 1) // PROMOS_PER_PAGE
@@ -5343,17 +5513,18 @@ def adm_promo_history(call):
                 text += f"\n<b>Код:</b> <code>{code}</code>\n"
                 text += f"{EMO_NOX} Награда: <b>{promo['reward']:,}</b> ноксов\n"
                 text += f"👥 Активаций: <b>{promo['current_uses']}/{promo['max_uses']}</b>\n"
-                cursor.execute('SELECT u.username, u.first_name, ph.activated_at FROM promo_history ph JOIN users u ON ph.user_id = u.user_id WHERE ph.code = ? ORDER BY ph.activated_at DESC', (code,))
+                cursor.execute('SELECT u.username, u.first_name, ph.activated_at FROM promo_history ph JOIN users u ON ph.user_id = u.user_id WHERE ph.code = %s ORDER BY ph.activated_at DESC', (code,))
                 users = cursor.fetchall()
                 if users:
                     user_list = []
                     for u in users:
                         name = f"@{u['username']}" if u['username'] else u['first_name']
-                        date = u['activated_at'][:16] if u['activated_at'] else ''
+                        date = str(u['activated_at'])[:16] if u['activated_at'] else ''
                         user_list.append(f"{name} ({date})")
                     text += "👤 Активировали:\n" + "\n".join(f"   • {u}" for u in user_list) + "\n"
                 else:
                     text += "👤 Активировали: <i>никто</i>\n"
+            cursor.close()
             conn.close()
         markup = types.InlineKeyboardMarkup()
         nav_buttons = []
@@ -5434,15 +5605,17 @@ def adm_subscription_management(call):
                 with db_lock:
                     conn = get_db_connection()
                     cursor = conn.cursor()
-                    cursor.execute('DELETE FROM chats WHERE chat_id = ?', (row['chat_id'],))
+                    cursor.execute('DELETE FROM chats WHERE chat_id = %s', (row['chat_id'],))
                     conn.commit()
+                    cursor.close()
                     conn.close()
         except:
             with db_lock:
                 conn = get_db_connection()
                 cursor = conn.cursor()
-                cursor.execute('DELETE FROM chats WHERE chat_id = ?', (row['chat_id'],))
+                cursor.execute('DELETE FROM chats WHERE chat_id = %s', (row['chat_id'],))
                 conn.commit()
+                cursor.close()
                 conn.close()
     text = f"{EMO_CHAT} <b>Чаты где бот админ</b>\n\n"
     markup = types.InlineKeyboardMarkup(row_width=1)
@@ -5466,8 +5639,9 @@ def del_chat(call):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('DELETE FROM chats WHERE chat_id = ?', (cid,))
+        cursor.execute('DELETE FROM chats WHERE chat_id = %s', (cid,))
         conn.commit()
+        cursor.close()
         conn.close()
     safe_answer(call.id, "✅ Удалено!")
     adm_subscription_management(call)
@@ -5481,8 +5655,9 @@ def toggle_subreq(call):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('UPDATE chats SET sub_required = ? WHERE chat_id = ?', (ns, cid))
+        cursor.execute('UPDATE chats SET sub_required = %s WHERE chat_id = %s', (ns, cid))
         conn.commit()
+        cursor.close()
         conn.close()
     safe_answer(call.id, "✅")
     adm_subscription_management(call)
@@ -5607,8 +5782,6 @@ def ignore_callback(call):
 
 
 # ---------- ОБРАБОТКА СООБЩЕНИЙ "УГАДАЙ ЧИСЛО" ----------
-# ВАЖНО: этот хэндлер срабатывает ТОЛЬКО когда в чате есть активная игра "число".
-# Благодаря этому он не перехватывает "кланы", "клан", "мой клан" и т.д.
 
 def _has_active_number_game(chat_id):
     if chat_id not in active_games:
@@ -5699,27 +5872,23 @@ def handle_number_game_messages(message):
         start_number_timer(cid, gmid)
 
 
-# ---------- КЛАНЫ (ФИНАЛЬНЫЕ ХЭНДЛЕРЫ — РЕГИСТРИРУЮТСЯ ПОСЛЕДНИМИ) ----------
+# ---------- ФИНАЛЬНЫЕ ХЭНДЛЕРЫ КЛАНОВ ----------
 
 @bot.message_handler(func=lambda m: m.text and m.text.strip().lower() == 'кланы')
 def cmd_clans_final(message):
-    print(f"[CLANS-FINAL] cmd_clans called by {message.from_user.id} in {message.chat.id}")
     try:
         text, markup = build_clans_list_text(0)
-        result = safe_send(message.chat.id, text, parse_mode='HTML', reply_markup=markup)
-        print(f"[CLANS-FINAL] sent result: {result is not None}")
+        safe_send(message.chat.id, text, parse_mode='HTML', reply_markup=markup)
     except Exception as e:
         print(f"[CLANS-FINAL ERR] {e}")
-        safe_send(message.chat.id, f"{EMO_CANCEL} Ошибка команды кланы: {e}", parse_mode='HTML')
+        safe_send(message.chat.id, f"{EMO_CANCEL} Ошибка: {e}", parse_mode='HTML')
 
 
 @bot.message_handler(func=lambda m: m.text and m.text.strip().lower() in ('клан', 'мой клан'))
 def cmd_my_clan_final(message):
-    print(f"[MYCLAN-FINAL] cmd_my_clan called by {message.from_user.id} in {message.chat.id}")
     try:
         text, markup = build_my_clan_text(message.from_user.id)
-        result = safe_send(message.chat.id, text, parse_mode='HTML', reply_markup=markup)
-        print(f"[MYCLAN-FINAL] sent result: {result is not None}")
+        safe_send(message.chat.id, text, parse_mode='HTML', reply_markup=markup)
     except Exception as e:
         print(f"[MYCLAN-FINAL ERR] {e}")
         safe_send(message.chat.id, f"{EMO_CANCEL} Ошибка: {e}", parse_mode='HTML')
@@ -5727,5 +5896,5 @@ def cmd_my_clan_final(message):
 
 if __name__ == '__main__':
     init_db()
-    print("🤖 NoxHub запущен!")
+    print("🤖 NoxHub запущен! (PostgreSQL)")
     bot.infinity_polling(allowed_updates=['message', 'callback_query', 'chat_member', 'my_chat_member', 'left_chat_member'])
