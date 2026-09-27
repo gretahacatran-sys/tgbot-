@@ -49,7 +49,7 @@ SUB_CACHE_TTL = 30
 BOT_ID_CACHE = {'id': None}
 
 SLOT_WEIGHTS = [
-    ('lose', 28.7), ('bad_lose', 30), ('fifty', 35), ('devstv', 6), ('minus2500', 1),
+    ('lose', 33), ('bad_lose', 35), ('fifty', 35), ('devstv', 6), ('minus2500', 1),
     ('kiwi', 32), ('cherry', 28), ('strawberry', 20), ('clover', 10), ('seven', 6),
     ('new_1_2', 8), ('new_5', 1), ('free10', 0.3), ('diamond', 0.3),
     ('super_jackpot', 0.0000001), ('neutral', 10),
@@ -1003,6 +1003,14 @@ def get_main_menu(user):
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(btn("Профиль", callback_data="show_profile", style='success', icon=ICO_PROFILE),
                btn("Пополнить", callback_data="donate_menu", style='success', icon=ICO_DONATE))
+    # VIP кнопка (бесплатные 5000 ноксов) — в самом боте, в главном меню
+    if user['bio_bonus_active'] == 1:
+        rem = get_bio_bonus_remaining_seconds(user)
+        markup.add(btn(f"💎 VIP 5000 через {format_bio_bonus_time(rem)}",
+                       callback_data="bio_bonus_info", style='success', icon=ICO_VIP))
+    else:
+        markup.add(btn("🎁 Бесплатные 5000 ноксов + VIP",
+                       callback_data="bio_bonus_info", style='success', icon=ICO_VIP))
     markup.add(btn("Промокод", callback_data="enter_promo", style='primary', icon=ICO_PROMO),
                btn("Правила", callback_data="show_rules", style='primary', icon=ICO_RULES))
     markup.add(btn("Наш канал", url="https://t.me/NoxHubs", style='danger', icon=ICO_CHANNEL),
@@ -1115,7 +1123,7 @@ def build_games_list():
             f"{EMO_BULB} <i>вместо ставки <b>вб</b></i>")
 
 
-# ---------- ИНСТРУКЦИЯ VIP (кнопка в боте) ----------
+# ---------- ИНСТРУКЦИЯ VIP (кнопка в главном меню) ----------
 
 @bot.callback_query_handler(func=lambda call: call.data == "bio_bonus_info")
 def bio_bonus_info_cb(call):
@@ -1171,7 +1179,7 @@ def bio_bonus_info_cb(call):
         safe_answer(call.id, "❌ Ошибка", show_alert=True)
 
 
-# ---------- КОМАНДА "б" ----------
+# ---------- КОМАНДА "б" (без VIP-кнопки) ----------
 
 @bot.message_handler(func=lambda m: m.text and m.text.strip().lower() == 'б')
 def cmd_balance_short(message):
@@ -1192,17 +1200,10 @@ def cmd_balance_short(message):
             bl, bi = f"+{QUICK_BONUS_AMOUNT}", ICO_GOLD_BTN
         else:
             bl, bi = f"Бонус {format_time(qr)}", ICO_BONUS_ICO
+        # ТОЛЬКО 2 кнопки: Пополнить + Бонус. VIP-кнопки тут НЕТ
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Пополнить", url=f"https://t.me/{bu}?start=donate", style='success', icon=ICO_DONATE),
                    btn(bl, callback_data=f"quick_bonus_{user['user_id']}", style='primary', icon=bi))
-        # КРАСНАЯ КНОПКА "Бесплатные 5000 ноксов" — ВСЕГДА ВИДНА
-        if user['bio_bonus_active'] == 1:
-            rem = get_bio_bonus_remaining_seconds(user)
-            markup.add(btn(f"💎 VIP 5000 через {format_bio_bonus_time(rem)}",
-                           callback_data="bio_bonus_info", style='danger', icon=ICO_VIP))
-        else:
-            markup.add(btn("🎁 Бесплатные 5000 ноксов",
-                           callback_data="bio_bonus_info", style='danger', icon=ICO_VIP))
         if message.reply_to_message:
             tid = message.reply_to_message.from_user.id
             tu = get_or_create_user(tid, message.reply_to_message.from_user.username,
@@ -1234,13 +1235,6 @@ def build_balance_keyboard(user):
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(btn("Пополнить", url=f"https://t.me/{bu}?start=donate", style='success', icon=ICO_DONATE),
                btn(bl, callback_data=f"quick_bonus_{user['user_id']}", style='primary', icon=bi))
-    if user['bio_bonus_active'] == 1:
-        rem = get_bio_bonus_remaining_seconds(user)
-        markup.add(btn(f"💎 VIP 5000 через {format_bio_bonus_time(rem)}",
-                       callback_data="bio_bonus_info", style='danger', icon=ICO_VIP))
-    else:
-        markup.add(btn("🎁 Бесплатные 5000 ноксов",
-                       callback_data="bio_bonus_info", style='danger', icon=ICO_VIP))
     return markup
 
 
@@ -1439,16 +1433,9 @@ def cmd_bonus(message):
         bl, bi = f"Бонус {format_time(qr)}", ICO_BONUS_ICO
     markup = types.InlineKeyboardMarkup()
     markup.add(btn(bl, callback_data=f"quick_bonus_{user['user_id']}", style='success', icon=bi))
-    if user['bio_bonus_active'] == 1:
-        rem = get_bio_bonus_remaining_seconds(user)
-        markup.add(btn(f"💎 VIP 5000 через {format_bio_bonus_time(rem)}",
-                       callback_data="bio_bonus_info", style='danger', icon=ICO_VIP))
-    else:
-        markup.add(btn("🎁 Бесплатные 5000 ноксов",
-                       callback_data="bio_bonus_info", style='danger', icon=ICO_VIP))
     text = (f"{EMO_BONUS} <b>БОНУСЫ</b>\n\n1️⃣ Ежедневный — 850-1200 {EMO_NOX}\n"
             f"2️⃣ Каждые 10 мин — +{QUICK_BONUS_AMOUNT} {EMO_NOX}\n"
-            f"3️⃣ <b>5000 в день + VIP-значок {EMO_VIP}</b> — за ссылку в Bio\n\n{EMO_BULB} Жми кнопку!")
+            f"3️⃣ <b>5000 в день + VIP-значок {EMO_VIP}</b> — в главном меню (кнопка «Бесплатные 5000»)\n\n{EMO_BULB} Жми кнопку!")
     safe_send(message.chat.id, text, reply_markup=markup, parse_mode='HTML')
 
 
