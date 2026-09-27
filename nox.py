@@ -41,7 +41,7 @@ slot_cooldowns = {}
 SLOT_COOLDOWN_SECONDS = 3
 BIO_BONUS_AMOUNT = 5000
 BIO_BONUS_CHECK_CACHE = {}
-BIO_CHECK_TTL = 60
+BIO_CHECK_TTL = 15
 BIO_LINK_KEYWORDS = ['nox_chatik', 'noxhubbot', 'noxhub']
 
 sub_check_cache = {}
@@ -435,12 +435,10 @@ def _bio_contains_keyword(text):
 
 
 def check_user_bio_link(user_id, username=None):
-    cache_key = user_id
-    now = time.time()
-    cached = BIO_BONUS_CHECK_CACHE.get(cache_key)
-    if cached and cached[0] > now:
-        return cached[1]
+    """Возвращает True если в bio или username есть ссылка на наш проект."""
     result = False
+    bio = ''
+    un = ''
     try:
         chat = bot.get_chat(user_id)
         bio = getattr(chat, 'bio', None) or ''
@@ -452,7 +450,6 @@ def check_user_bio_link(user_id, username=None):
     if not result and username:
         if _bio_contains_keyword(username):
             result = True
-    BIO_BONUS_CHECK_CACHE[cache_key] = (now + BIO_CHECK_TTL, result)
     return result
 
 
@@ -478,60 +475,75 @@ def format_bio_bonus_time(seconds):
     return f"{m}м"
 
 
+def activate_vip(uid, chat_id, message=None):
+    """Активирует VIP если найдена ссылка. Возвращает True если только что активировали."""
+    user = get_or_create_user(uid, "", "")
+    has_link = check_user_bio_link(uid, getattr(message.from_user, 'username', None) if message else None)
+    was_active = user['bio_bonus_active'] == 1
+    today = get_moscow_date()
+    if has_link and not was_active:
+        with db_lock:
+            conn = get_db_connection()
+            cursor = db_cursor(conn)
+            cursor.execute('UPDATE users SET bio_bonus_active = 1, bio_bonus_last_date = %s WHERE user_id = %s',
+                           (today, uid))
+            conn.commit()
+            conn.close()
+        name = ""
+        if message:
+            name = (message.from_user.first_name or message.from_user.username or "Пользователь")
+        else:
+            u = get_or_create_user(uid, "", "")
+            name = u['first_name'] or u['username'] or "Пользователь"
+        safe_send(chat_id,
+                  f"{EMO_VIP} <b>VIP-СТАТУС ПОДКЛЮЧЕН!</b> {EMO_VIP}\n\n"
+                  f"{EMO_SAFE} Пользователь: <b>{name}</b>\n"
+                  f"{EMO_NOX} Теперь он получает <b>{BIO_BONUS_AMOUNT:,}</b> ноксов каждый день!\n"
+                  f"{EMO_VIP} Рядом с его ником появился <b>VIP-значок</b> {EMO_VIP}",
+                  parse_mode='HTML')
+        return True
+    elif has_link and was_active:
+        # Уже активен — проверим ежедневный бонус
+        if user['bio_bonus_last_date'] != today:
+            with db_lock:
+                conn = get_db_connection()
+                cursor = db_cursor(conn)
+                cursor.execute('UPDATE users SET balance = balance + %s, bio_bonus_last_date = %s WHERE user_id = %s',
+                               (BIO_BONUS_AMOUNT, today, uid))
+                conn.commit()
+                conn.close()
+            safe_send(chat_id,
+                      f"{EMO_VIP} {get_user_display_by_id(uid)} получил <b>+{BIO_BONUS_AMOUNT:,} {EMO_NOX}</b> "
+                      f"за VIP-статус! 🎉",
+                      parse_mode='HTML')
+        return False
+    else:
+        # Ссылки нет — снимаем если был активен
+        if was_active:
+            with db_lock:
+                conn = get_db_connection()
+                cursor = db_cursor(conn)
+                cursor.execute('UPDATE users SET balance = balance - %s, bio_bonus_active = 0, bio_bonus_last_date = NULL WHERE user_id = %s',
+                               (BIO_BONUS_AMOUNT, uid))
+                conn.commit()
+                conn.close()
+            safe_send(chat_id,
+                      f"{EMO_CANCEL} {get_user_display_by_id(uid)} убрал ссылку из профиля!\n"
+                      f"{EMO_VIP} VIP-статус снят\n"
+                      f"{EMO_NOX} Списано <b>-{BIO_BONUS_AMOUNT:,}</b>",
+                      parse_mode='HTML')
+        return False
+
+
 def process_bio_bonus(message):
+    """Обёртка для совместимости."""
     try:
-        uid = message.from_user.id
-        un = message.from_user.username
-        if uid == OWNER_ID:
+        if not message.from_user:
             return
         if message.from_user.is_bot:
             return
-        user = get_or_create_user(uid, un or "", "")
-        has_link = check_user_bio_link(uid, un)
-        was_active = user['bio_bonus_active'] == 1
-        today = get_moscow_date()
-        if has_link:
-            if not was_active:
-                with db_lock:
-                    conn = get_db_connection()
-                    cursor = db_cursor(conn)
-                    cursor.execute('UPDATE users SET bio_bonus_active = 1, bio_bonus_last_date = %s WHERE user_id = %s',
-                                   (today, uid))
-                    conn.commit()
-                    conn.close()
-                name = (message.from_user.first_name or message.from_user.username or "Пользователь")
-                safe_send(message.chat.id,
-                          f"{EMO_VIP} <b>VIP-СТАТУС ПОДКЛЮЧЕН!</b> {EMO_VIP}\n\n"
-                          f"{EMO_SAFE} Пользователь: <b>{name}</b>\n"
-                          f"{EMO_NOX} Теперь он получает <b>{BIO_BONUS_AMOUNT:,}</b> ноксов каждый день!\n"
-                          f"{EMO_VIP} Рядом с его ником появился <b>VIP-значок</b> {EMO_VIP}",
-                          parse_mode='HTML')
-            elif user['bio_bonus_last_date'] != today:
-                with db_lock:
-                    conn = get_db_connection()
-                    cursor = db_cursor(conn)
-                    cursor.execute('UPDATE users SET balance = balance + %s, bio_bonus_last_date = %s WHERE user_id = %s',
-                                   (BIO_BONUS_AMOUNT, today, uid))
-                    conn.commit()
-                    conn.close()
-                safe_send(message.chat.id,
-                          f"{EMO_VIP} {get_user_display_by_id(uid)} получил <b>+{BIO_BONUS_AMOUNT:,} {EMO_NOX}</b> "
-                          f"за VIP-статус! 🎉",
-                          parse_mode='HTML')
-        else:
-            if was_active:
-                with db_lock:
-                    conn = get_db_connection()
-                    cursor = db_cursor(conn)
-                    cursor.execute('UPDATE users SET balance = balance - %s, bio_bonus_active = 0, bio_bonus_last_date = NULL WHERE user_id = %s',
-                                   (BIO_BONUS_AMOUNT, uid))
-                    conn.commit()
-                    conn.close()
-                safe_send(message.chat.id,
-                          f"{EMO_CANCEL} {get_user_display_by_id(uid)} убрал ссылку из профиля!\n"
-                          f"{EMO_VIP} VIP-статус снят\n"
-                          f"{EMO_NOX} Списано <b>-{BIO_BONUS_AMOUNT:,}</b>",
-                          parse_mode='HTML')
+        uid = message.from_user.id
+        activate_vip(uid, message.chat.id, message)
     except Exception as e:
         print(f"[BIO BONUS ERR] {e}")
 
@@ -637,8 +649,9 @@ def get_user_display(user):
                 pass
         if not name:
             name = f"id{uid}"
-        badge = f" {EMO_VIP}" if vip else ""
-        return f'<a href="tg://user?id={uid}">{name}</a>{badge}'
+        # VIP-значок ВНУТРИ ссылки рядом с ником
+        display = f"{name} {EMO_VIP}" if vip else name
+        return f'<a href="tg://user?id={uid}">{display}</a>'
     except Exception:
         return "Пользователь"
 
@@ -1003,13 +1016,12 @@ def get_main_menu(user):
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(btn("Профиль", callback_data="show_profile", style='success', icon=ICO_PROFILE),
                btn("Пополнить", callback_data="donate_menu", style='success', icon=ICO_DONATE))
-    # VIP кнопка (бесплатные 5000 ноксов) — в самом боте, в главном меню
     if user['bio_bonus_active'] == 1:
         rem = get_bio_bonus_remaining_seconds(user)
-        markup.add(btn(f"💎 VIP 5000 через {format_bio_bonus_time(rem)}",
+        markup.add(btn(f"VIP 5000 через {format_bio_bonus_time(rem)}",
                        callback_data="bio_bonus_info", style='success', icon=ICO_VIP))
     else:
-        markup.add(btn("🎁 Бесплатные 5000 ноксов + VIP",
+        markup.add(btn("Бесплатные 5000 ноксов + VIP",
                        callback_data="bio_bonus_info", style='success', icon=ICO_VIP))
     markup.add(btn("Промокод", callback_data="enter_promo", style='primary', icon=ICO_PROMO),
                btn("Правила", callback_data="show_rules", style='primary', icon=ICO_RULES))
@@ -1091,6 +1103,9 @@ def cmd_start(message):
     if len(args) > 1 and args[1] == 'donate':
         donate_menu_start(message)
         return
+    # Обновляем VIP при /start
+    activate_vip(message.from_user.id, message.chat.id, message)
+    user = get_or_create_user(message.from_user.id, "", "")
     markup = get_main_menu(user)
     name = user['first_name'] or user['username'] or "Гость"
     text = f"{EMO_WELCOME} Добро пожаловать, {name}!\n\nВыбери раздел ниже {EMO_DOWN}"
@@ -1123,52 +1138,38 @@ def build_games_list():
             f"{EMO_BULB} <i>вместо ставки <b>вб</b></i>")
 
 
-# ---------- ИНСТРУКЦИЯ VIP (кнопка в главном меню) ----------
+# ---------- ИНСТРУКЦИЯ VIP (короткая) ----------
 
 @bot.callback_query_handler(func=lambda call: call.data == "bio_bonus_info")
 def bio_bonus_info_cb(call):
     try:
         uid = call.from_user.id
         cid = call.message.chat.id
+        # Форсим обновление VIP при открытии
+        activate_vip(uid, cid, call.message)
         user = get_or_create_user(uid, call.from_user.username, call.from_user.first_name)
         has = user['bio_bonus_active'] == 1
-        link_ok = check_user_bio_link(uid, call.from_user.username)
-        text = (f"{EMO_VIP} <b>БЕСПЛАТНЫЕ 5000 НОКСОВ ЕЖЕДНЕВНО + VIP-ЗНАЧОК</b> {EMO_VIP}\n"
-                f"━━━━━━━━━━━━━━━\n\n"
-                f"{EMO_BONUS} Получай <b>{BIO_BONUS_AMOUNT:,} {EMO_NOX}</b> каждый день!\n"
-                f"{EMO_VIP} И <b>VIP-ЗНАЧОК {EMO_VIP}</b> рядом с ником!\n\n"
-                f"{EMO_RULES} <b>КАК ПОДКЛЮЧИТЬ:</b>\n"
-                f"1️⃣ Открой свой профиль Telegram\n"
-                f"2️⃣ В поле <b>«О себе»</b> (Bio) добавь одну из ссылок:\n"
-                f"   • <code>https://t.me/Nox_chatik</code>\n"
-                f"   • <code>@Nox_chatik</code>\n"
-                f"   • <code>@NoxHubBot</code>\n"
-                f"3️⃣ Можно также указать в <b>@username</b>\n"
-                f"4️⃣ Напиши любое сообщение в @Nox_chatik — бот сам проверит и подключит!\n\n"
-                f"{EMO_SAFE} <b>ЧТО ТЫ ПОЛУЧАЕШЬ:</b>\n"
-                f"• {EMO_NOX} <b>{BIO_BONUS_AMOUNT:,} ноксов</b> каждый день в 00:00 МСК\n"
-                f"• {EMO_VIP} <b>VIP-значок</b> рядом с твоим ником\n"
-                f"• 🎁 Приоритетную поддержку и статус в чате\n\n"
-                f"{EMO_CANCEL} <b>ВАЖНО:</b>\n"
-                f"• Если уберёшь ссылку — VIP снимется, спишется <b>-{BIO_BONUS_AMOUNT:,} {EMO_NOX}</b>\n"
-                f"• Нужна <b>обязательная подписка</b> на каналы/чаты\n"
-                f"• Проверка идёт по Bio и @username\n\n")
+
+        text = (f"{EMO_VIP} <b>5000 НОКСОВ В ДЕНЬ + VIP-ЗНАЧОК</b> {EMO_VIP}\n\n"
+                f"<b>Что даёт:</b>\n"
+                f"• {EMO_NOX} <b>+5,000 ноксов</b> каждый день (00:00 МСК)\n"
+                f"• {EMO_VIP} <b>VIP-значок</b> рядом с ником\n\n"
+                f"<b>Как подключить:</b>\n"
+                f"1. Открой профиль Telegram\n"
+                f"2. В поле «О себе» добавь: <code>@Nox_chatik</code>\n"
+                f"3. Напиши любое сообщение в @Nox_chatik\n\n"
+                f"{EMO_CANCEL} Уберёшь ссылку — снимут <b>5,000</b> ноксов и VIP.\n\n")
+
         if has:
             rem = get_bio_bonus_remaining_seconds(user)
-            text += (f"{EMO_VIP} <b>СТАТУС: VIP АКТИВЕН</b> {EMO_VIP}\n"
-                     f"{EMO_TIMER} Следующий бонус через: <b>{format_bio_bonus_time(rem)}</b>")
-            safe_answer(call.id, f"💎 VIP • +5000 через {format_bio_bonus_time(rem)}", show_alert=True)
-        elif link_ok:
-            text += (f"{EMO_BULB} <b>Ссылка найдена!</b>\n"
-                     f"Напиши что-нибудь в @Nox_chatik — бот автоматически активирует VIP-статус.")
-            safe_answer(call.id, "✅ Ссылка найдена! Напиши в чатик.", show_alert=True)
+            text += f"{EMO_VIP} <b>VIP АКТИВЕН</b> — следующий бонус через <b>{format_bio_bonus_time(rem)}</b>"
+            safe_answer(call.id, f"VIP активен • +5000 через {format_bio_bonus_time(rem)}", show_alert=True)
         else:
-            text += (f"{EMO_CANCEL} <b>У тебя ещё не подключено.</b>\n"
-                     f"Добавь ссылку в Bio и напиши что-нибудь в @Nox_chatik.")
-            safe_answer(call.id, "❌ Не подключено. Добавь ссылку в Bio.", show_alert=True)
+            text += f"{EMO_CANCEL} <b>VIP не подключён.</b> Добавь <code>@Nox_chatik</code> в Bio и напиши в чат."
+            safe_answer(call.id, "Добавь @Nox_chatik в Bio и напиши в чат", show_alert=True)
+
         markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(btn("Наш чатик (написать)", url=CHAT_LINK, style='danger', icon=ICO_CHAT))
-        markup.add(btn("Наш канал", url="https://t.me/NoxHubs", style='danger', icon=ICO_CHANNEL))
+        markup.add(btn("Открыть чат", url=CHAT_LINK, style='danger', icon=ICO_CHAT))
         markup.add(btn("Назад", callback_data="back_to_menu", style='primary', icon=ICO_BACK))
         try:
             safe_edit(cid, call.message.message_id, text, reply_markup=markup, parse_mode='HTML')
@@ -1179,13 +1180,15 @@ def bio_bonus_info_cb(call):
         safe_answer(call.id, "❌ Ошибка", show_alert=True)
 
 
-# ---------- КОМАНДА "б" (без VIP-кнопки) ----------
+# ---------- КОМАНДА "б" ----------
 
 @bot.message_handler(func=lambda m: m.text and m.text.strip().lower() == 'б')
 def cmd_balance_short(message):
     try:
         if check_banned(message.from_user.id, message.chat.id):
             return
+        # Форсим проверку VIP при каждом "б"
+        activate_vip(message.from_user.id, message.chat.id, message)
         if not check_required_subscriptions(message.from_user.id, message.chat.id, message.message_id,
                                             sender_chat=message.sender_chat):
             return
@@ -1200,7 +1203,6 @@ def cmd_balance_short(message):
             bl, bi = f"+{QUICK_BONUS_AMOUNT}", ICO_GOLD_BTN
         else:
             bl, bi = f"Бонус {format_time(qr)}", ICO_BONUS_ICO
-        # ТОЛЬКО 2 кнопки: Пополнить + Бонус. VIP-кнопки тут НЕТ
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Пополнить", url=f"https://t.me/{bu}?start=donate", style='success', icon=ICO_DONATE),
                    btn(bl, callback_data=f"quick_bonus_{user['user_id']}", style='primary', icon=bi))
@@ -1365,6 +1367,7 @@ def cmd_transfer_short(message):
 def cmd_profile(message):
     if check_banned(message.from_user.id, message.chat.id):
         return
+    activate_vip(message.from_user.id, message.chat.id, message)
     if not check_required_subscriptions(message.from_user.id, message.chat.id, message.message_id,
                                         sender_chat=message.sender_chat):
         return
@@ -1422,6 +1425,7 @@ def cmd_rules(message):
 def cmd_bonus(message):
     if check_banned(message.from_user.id, message.chat.id):
         return
+    activate_vip(message.from_user.id, message.chat.id, message)
     user = get_or_create_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     dt = user['last_bonus_date'] == get_moscow_date()
     qr = get_quick_bonus_remaining(user)
@@ -1474,6 +1478,7 @@ def show_rules(call):
 @bot.callback_query_handler(func=lambda call: call.data == "show_profile")
 def show_profile(call):
     uid = call.from_user.id
+    activate_vip(uid, call.message.chat.id, call.message)
     user = get_or_create_user(uid, call.from_user.username, call.from_user.first_name)
     stats = get_all_stats(uid)
     tw = sum(d['wins'] for d in stats.values())
@@ -4770,9 +4775,11 @@ def bio_bonus_hook(message):
             return
         if message.from_user.is_bot:
             return
-        if message.from_user.id == OWNER_ID:
+        # Пропускаем команды которые сами обрабатывают activate_vip
+        txt_lower = (message.text or '').strip().lower()
+        if txt_lower in ('б', 'бонус', 'профиль'):
             return
-        process_bio_bonus(message)
+        activate_vip(message.from_user.id, message.chat.id, message)
     except Exception as e:
         print(f"[BIO HOOK ERR] {e}")
 
