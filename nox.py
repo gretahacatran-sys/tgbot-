@@ -33,31 +33,25 @@ PROMOS_PER_PAGE = 3
 CARD_NUMBER = '2200702140962171'
 CHANNEL_LINK = 'https://t.me/NoxHubs'
 temp_donate = {}
-CLAN_CREATE_COST = 100000
-CLAN_SLOT_COST = 5000
-CLAN_BASE_SLOTS = 5
-CLAN_EMOJI_PER_PAGE = 20
 QUICK_BONUS_INTERVAL = 10 * 60
 QUICK_BONUS_AMOUNT = 500
 
 sub_check_cache = {}
 SUB_CACHE_TTL = 30
-user_clan_cache = {}
-USER_CLAN_TTL = 15
 BOT_ID_CACHE = {'id': None}
 
 SLOT_WEIGHTS = [
-    ('lose', 29.52),
-    ('tangerine', 21.98),
-    ('kiwi', 16.0),
-    ('cherry', 12.0),
+    ('lose', 36.7),
+    ('tangerine', 15.0),
+    ('kiwi', 17.0),
+    ('cherry', 13.0),
     ('strawberry', 10.0),
-    ('clover', 6.0),
-    ('seven', 4.0),
-    ('diamond', 0.50),
+    ('clover', 5.0),
+    ('seven', 3.0),
+    ('diamond', 0.3),
 ]
 SLOT_SYMBOLS = {
-    'tangerine': ('5792092620784146419', '🍊'),
+    'tangerine': ('5456173242765034256', '🍊'),
     'cherry': ('5791951647072590102', '🍒'),
     'clover': ('5791885057899631820', '🍀'),
     'seven': ('5792024631451850893', '7️⃣'),
@@ -66,7 +60,7 @@ SLOT_SYMBOLS = {
     'kiwi': ('5791848593627289156', '🥝'),
 }
 SLOT_MULT = {
-    'tangerine': 0.30,
+    'tangerine': 0.50,
     'cherry': 2.0,
     'seven': 3.0,
     'diamond': 10.0,
@@ -74,13 +68,18 @@ SLOT_MULT = {
     'kiwi': 1.5,
 }
 
+CLOVER_MIN_BALANCE = 500
 
-def roll_slot_outcome():
+
+def roll_slot_outcome(user_balance=0):
+    """Клевер выпадает только если баланс игрока > CLOVER_MIN_BALANCE."""
     r = random.random() * 100.0
     acc = 0.0
     for name, w in SLOT_WEIGHTS:
         acc += w
         if r < acc:
+            if name == 'clover' and user_balance <= CLOVER_MIN_BALANCE:
+                return 'lose'
             return name
     return 'lose'
 
@@ -146,7 +145,7 @@ EMO_MODS = '<tg-emoji emoji-id="5985532304208957021">🛡️</tg-emoji>'
 EMO_SLOTS = '<tg-emoji emoji-id="5384509325429463744">🎰</tg-emoji>'
 EMO_SURRENDER = '<tg-emoji emoji-id="5411534277563150683">🏳️</tg-emoji>'
 EMO_CHERRY = '<tg-emoji emoji-id="5791951647072590102">🍒</tg-emoji>'
-EMO_ORANGE = '<tg-emoji emoji-id="5792092620784146419">🍊</tg-emoji>'
+EMO_ORANGE = '<tg-emoji emoji-id="5456173242765034256">🍊</tg-emoji>'
 EMO_DIAMOND = '<tg-emoji emoji-id="5791633806607782442">💎</tg-emoji>'
 EMO_LEMON = '<tg-emoji emoji-id="5791734858598323525">🍋</tg-emoji>'
 EMO_NUMBER = '<tg-emoji emoji-id="6323436631428695574">🔢</tg-emoji>'
@@ -160,8 +159,6 @@ EMO_TTT_O = '<tg-emoji emoji-id="5393109606597685796">⭕</tg-emoji>'
 EMO_TTT_INVITE = '<tg-emoji emoji-id="5359419191638114278">🎮</tg-emoji>'
 EMO_CHAT = '<tg-emoji emoji-id="5235814241927181048">💬</tg-emoji>'
 EMO_VS = '<tg-emoji emoji-id="5354932922203782306">⚔️</tg-emoji>'
-EMO_CLAN = '<tg-emoji emoji-id="5285423837205260312">🎟</tg-emoji>'
-EMO_CLAN_HEADER = '<tg-emoji emoji-id="5224575413253274698">🏰</tg-emoji>'
 EMO_BOOM = '<tg-emoji emoji-id="5424972470023104089">🔥</tg-emoji>'
 EMO_HANDSHAKE = '<tg-emoji emoji-id="5370908873400020056">🤝</tg-emoji>'
 
@@ -211,7 +208,6 @@ ICO_SOLO_HEADER = '6001198270435563383'
 ICO_DICE = '5280816565657300091'
 ICO_NUMBER = '6323436631428695574'
 ICO_VS = '5354932922203782306'
-ICO_CLAN_HEADER = '5224575413253274698'
 
 
 def btn(text, callback_data=None, url=None, style=None, icon=None):
@@ -429,349 +425,13 @@ def init_db():
             added_by BIGINT, added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
 
-        cursor.execute('''CREATE TABLE IF NOT EXISTS clans (
-            id SERIAL PRIMARY KEY, name TEXT UNIQUE,
-            emoji_id TEXT, emoji_fallback TEXT,
-            leader_crown_id TEXT, leader_crown_fallback TEXT,
-            leader_id BIGINT, treasury BIGINT DEFAULT 0,
-            max_members INTEGER DEFAULT 5,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )''')
-        for col, ddl in [
-            ('leader_crown_id', 'ALTER TABLE clans ADD COLUMN leader_crown_id TEXT'),
-            ('leader_crown_fallback', 'ALTER TABLE clans ADD COLUMN leader_crown_fallback TEXT'),
-        ]:
-            if not column_exists(cursor, 'clans', col):
-                cursor.execute(ddl)
-
-        cursor.execute('''CREATE TABLE IF NOT EXISTS clan_members (
-            clan_id INTEGER, user_id BIGINT UNIQUE,
-            joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (clan_id, user_id)
-        )''')
-
-        cursor.execute('''CREATE TABLE IF NOT EXISTS clan_requests (
-            id SERIAL PRIMARY KEY, clan_id INTEGER, user_id BIGINT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )''')
-
-        cursor.execute('''CREATE TABLE IF NOT EXISTS clan_emojis (
-            id SERIAL PRIMARY KEY, emoji_id TEXT UNIQUE, fallback TEXT
-        )''')
-
-        cursor.execute('''CREATE TABLE IF NOT EXISTS clan_crowns (
-            id SERIAL PRIMARY KEY, emoji_id TEXT UNIQUE, fallback TEXT
-        )''')
-
         cursor.execute(
             'INSERT INTO moderators (user_id, role, added_by) VALUES (%s, %s, %s) '
             'ON CONFLICT (user_id) DO NOTHING',
             (OWNER_ID, 'owner', OWNER_ID))
 
-        cursor.execute('SELECT COUNT(*) AS c FROM clan_emojis')
-        if cursor.fetchone()['c'] == 0:
-            default_emojis = [
-                ('5274165555396390084', '💰'),
-                ('5280816565657300091', '🎲'),
-                ('5285423837205260312', '🎟'),
-                ('5213071346417812800', '🏢'),
-                ('5244590801438138696', '🏆'),
-                ('5327938120740523910', '📢'),
-                ('5262878819429141746', '📖'),
-                ('5323261373801571717', '🆘'),
-                ('5463002283715349737', '💳'),
-                ('6008353471202333128', '⭐'),
-                ('5379930048478330552', '💀'),
-                ('5384509325429463744', '🎰'),
-            ]
-            for eid, fb in default_emojis:
-                cursor.execute(
-                    'INSERT INTO clan_emojis (emoji_id, fallback) VALUES (%s, %s) ON CONFLICT (emoji_id) DO NOTHING',
-                    (eid, fb))
-
-        cursor.execute('SELECT COUNT(*) AS c FROM clan_crowns')
-        if cursor.fetchone()['c'] == 0:
-            default_crowns = [
-                ('5217822164362739968', '👑'),
-                ('6129805886383723340', '👑'),
-                ('5224575413253274698', '🏰'),
-                ('5244590801438138696', '🏆'),
-            ]
-            for eid, fb in default_crowns:
-                cursor.execute(
-                    'INSERT INTO clan_crowns (emoji_id, fallback) VALUES (%s, %s) ON CONFLICT (emoji_id) DO NOTHING',
-                    (eid, fb))
-
         conn.commit()
         conn.close()
-
-
-# ==========================================================
-# ============   КЛАНЫ — ХЕЛПЕРЫ   =========================
-# ==========================================================
-
-def get_user_clan(user_id, use_cache=True):
-    if use_cache:
-        now = time.time()
-        c = user_clan_cache.get(user_id)
-        if c and c[0] > now:
-            return c[1]
-    conn = get_db_connection()
-    cursor = db_cursor(conn)
-    cursor.execute('''SELECT c.id, c.name, c.emoji_id, c.emoji_fallback,
-                       c.leader_crown_id, c.leader_crown_fallback,
-                       c.leader_id, c.treasury, c.max_members
-        FROM clans c JOIN clan_members m ON c.id = m.clan_id
-        WHERE m.user_id = %s''', (user_id,))
-    row = cursor.fetchone()
-    conn.close()
-    res = dict(row) if row else None
-    if use_cache:
-        user_clan_cache[user_id] = (time.time() + USER_CLAN_TTL, res)
-    return res
-
-
-def invalidate_user_clan(user_id):
-    user_clan_cache.pop(user_id, None)
-
-
-def get_clan_by_id(clan_id):
-    conn = get_db_connection()
-    cursor = db_cursor(conn)
-    cursor.execute('SELECT * FROM clans WHERE id = %s', (clan_id,))
-    row = cursor.fetchone()
-    conn.close()
-    return dict(row) if row else None
-
-
-def get_clan_by_name(name):
-    conn = get_db_connection()
-    cursor = db_cursor(conn)
-    cursor.execute('SELECT * FROM clans WHERE LOWER(name) = LOWER(%s)', (name,))
-    row = cursor.fetchone()
-    conn.close()
-    return dict(row) if row else None
-
-
-def get_clan_members(clan_id):
-    conn = get_db_connection()
-    cursor = db_cursor(conn)
-    cursor.execute('SELECT user_id FROM clan_members WHERE clan_id = %s ORDER BY joined_at', (clan_id,))
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def get_clan_member_count(clan_id):
-    conn = get_db_connection()
-    cursor = db_cursor(conn)
-    cursor.execute('SELECT COUNT(*) AS c FROM clan_members WHERE clan_id = %s', (clan_id,))
-    row = cursor.fetchone()
-    conn.close()
-    return row['c'] if row else 0
-
-
-def get_all_clans():
-    conn = get_db_connection()
-    cursor = db_cursor(conn)
-    cursor.execute('SELECT * FROM clans ORDER BY created_at ASC')
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def search_clans(query):
-    conn = get_db_connection()
-    cursor = db_cursor(conn)
-    cursor.execute('SELECT * FROM clans WHERE LOWER(name) LIKE LOWER(%s) ORDER BY name', (f'%{query}%',))
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def create_clan(name, emoji_id, emoji_fallback, crown_id, crown_fallback, leader_id):
-    with db_lock:
-        conn = get_db_connection()
-        cursor = db_cursor(conn)
-        cursor.execute('''INSERT INTO clans
-            (name, emoji_id, emoji_fallback, leader_crown_id, leader_crown_fallback, leader_id, max_members)
-            VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id''',
-            (name, emoji_id, emoji_fallback, crown_id, crown_fallback, leader_id, CLAN_BASE_SLOTS))
-        clan_id = cursor.fetchone()['id']
-        cursor.execute('INSERT INTO clan_members (clan_id, user_id) VALUES (%s, %s) ON CONFLICT (user_id) DO NOTHING',
-                       (clan_id, leader_id))
-        conn.commit()
-        conn.close()
-    invalidate_user_clan(leader_id)
-    return clan_id
-
-
-def delete_clan(clan_id):
-    with db_lock:
-        conn = get_db_connection()
-        cursor = db_cursor(conn)
-        cursor.execute('DELETE FROM clan_members WHERE clan_id = %s', (clan_id,))
-        cursor.execute('DELETE FROM clan_requests WHERE clan_id = %s', (clan_id,))
-        cursor.execute('DELETE FROM clans WHERE id = %s', (clan_id,))
-        conn.commit()
-        conn.close()
-    user_clan_cache.clear()
-
-
-def add_clan_member(clan_id, user_id):
-    with db_lock:
-        conn = get_db_connection()
-        cursor = db_cursor(conn)
-        cursor.execute('INSERT INTO clan_members (clan_id, user_id) VALUES (%s, %s) ON CONFLICT (user_id) DO NOTHING',
-                       (clan_id, user_id))
-        conn.commit()
-        conn.close()
-    invalidate_user_clan(user_id)
-
-
-def remove_clan_member(user_id):
-    with db_lock:
-        conn = get_db_connection()
-        cursor = db_cursor(conn)
-        cursor.execute('DELETE FROM clan_members WHERE user_id = %s', (user_id,))
-        conn.commit()
-        conn.close()
-    invalidate_user_clan(user_id)
-
-
-def expand_clan(clan_id):
-    with db_lock:
-        conn = get_db_connection()
-        cursor = db_cursor(conn)
-        cursor.execute('UPDATE clans SET max_members = max_members + 1 WHERE id = %s', (clan_id,))
-        conn.commit()
-        conn.close()
-
-
-def transfer_clan(clan_id, new_leader_id):
-    with db_lock:
-        conn = get_db_connection()
-        cursor = db_cursor(conn)
-        cursor.execute('UPDATE clans SET leader_id = %s WHERE id = %s', (new_leader_id, clan_id))
-        conn.commit()
-        conn.close()
-
-
-def add_clan_request(clan_id, user_id):
-    with db_lock:
-        conn = get_db_connection()
-        cursor = db_cursor(conn)
-        cursor.execute('SELECT 1 FROM clan_requests WHERE clan_id = %s AND user_id = %s', (clan_id, user_id))
-        if cursor.fetchone():
-            conn.close()
-            return False
-        cursor.execute('INSERT INTO clan_requests (clan_id, user_id) VALUES (%s, %s)', (clan_id, user_id))
-        conn.commit()
-        conn.close()
-        return True
-
-
-def remove_clan_request(clan_id, user_id):
-    with db_lock:
-        conn = get_db_connection()
-        cursor = db_cursor(conn)
-        cursor.execute('DELETE FROM clan_requests WHERE clan_id = %s AND user_id = %s', (clan_id, user_id))
-        conn.commit()
-        conn.close()
-
-
-def get_clan_emojis():
-    conn = get_db_connection()
-    cursor = db_cursor(conn)
-    cursor.execute('SELECT id, emoji_id, fallback FROM clan_emojis ORDER BY id DESC')
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def add_clan_emoji(emoji_id, fallback):
-    conn = get_db_connection()
-    cursor = db_cursor(conn)
-    try:
-        cursor.execute('INSERT INTO clan_emojis (emoji_id, fallback) VALUES (%s, %s) ON CONFLICT (emoji_id) DO NOTHING',
-                       (emoji_id, fallback))
-        conn.commit()
-        return cursor.rowcount > 0
-    except Exception:
-        conn.rollback()
-        return False
-    finally:
-        conn.close()
-
-
-def clear_clan_emojis():
-    conn = get_db_connection()
-    cursor = db_cursor(conn)
-    cursor.execute('DELETE FROM clan_emojis')
-    conn.commit()
-    conn.close()
-
-
-def get_clan_crowns():
-    conn = get_db_connection()
-    cursor = db_cursor(conn)
-    cursor.execute('SELECT id, emoji_id, fallback FROM clan_crowns ORDER BY id DESC')
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def add_clan_crown(emoji_id, fallback):
-    conn = get_db_connection()
-    cursor = db_cursor(conn)
-    try:
-        cursor.execute('INSERT INTO clan_crowns (emoji_id, fallback) VALUES (%s, %s) ON CONFLICT (emoji_id) DO NOTHING',
-                       (emoji_id, fallback))
-        conn.commit()
-        return cursor.rowcount > 0
-    except Exception:
-        conn.rollback()
-        return False
-    finally:
-        conn.close()
-
-
-def clear_clan_crowns():
-    conn = get_db_connection()
-    cursor = db_cursor(conn)
-    cursor.execute('DELETE FROM clan_crowns')
-    conn.commit()
-    conn.close()
-
-
-def render_clan_name(clan):
-    if not clan:
-        return ''
-    e = ''
-    if clan.get('emoji_id'):
-        e = f'<tg-emoji emoji-id="{clan["emoji_id"]}">{clan.get("emoji_fallback") or "🏰"}</tg-emoji>'
-    return f'{e}<b>{clan["name"]}</b>'
-
-
-def render_leader_crown(clan):
-    if not clan:
-        return ''
-    if clan.get('leader_crown_id'):
-        return f'<tg-emoji emoji-id="{clan["leader_crown_id"]}">{clan.get("leader_crown_fallback") or "👑"}</tg-emoji>'
-    return '👑'
-
-
-def get_clean_name(user_id):
-    conn = get_db_connection()
-    cursor = db_cursor(conn)
-    cursor.execute('SELECT first_name, username FROM users WHERE user_id = %s', (user_id,))
-    row = cursor.fetchone()
-    conn.close()
-    if row:
-        name = (row['first_name'] or '').strip() or (row['username'] or '').strip()
-        if name:
-            return name
-    return f"id{user_id}"
 
 
 # ---------- ОБЩИЕ ----------
@@ -809,12 +469,6 @@ def get_user_display(user):
                 name = (row['first_name'] or '').strip() or (row['username'] or '').strip()
         if not name:
             name = f"id{user_id}"
-        clan = get_user_clan(user_id)
-        if clan:
-            prefix = ''
-            if clan.get('emoji_id'):
-                prefix = f'<tg-emoji emoji-id="{clan["emoji_id"]}">{clan.get("emoji_fallback") or "🏰"}</tg-emoji> '
-            return f'{prefix}<a href="tg://user?id={user_id}">{name}</a> <b>〘{clan["name"]}〙</b>'
         return f'<a href="tg://user?id={user_id}">{name}</a>'
     except Exception:
         return "Пользователь"
@@ -1195,88 +849,6 @@ def handle_subscribe_check(call):
         safe_answer(call.id, "❌ Ошибка!", show_alert=True)
 
 
-# ==========================================================
-# ============   КЛАНЫ — ХЭНДЛЕРЫ (САМЫЕ ПЕРВЫЕ)   ========
-# ==========================================================
-
-def build_clans_list_text(page=0):
-    clans = get_all_clans()
-    if not clans:
-        return f"{EMO_CLAN_HEADER} <b>СПИСОК КЛАНОВ</b>\n\n<i>Пока нет ни одного клана.</i>", None
-    per_page = 10
-    total_pages = max(1, (len(clans) + per_page - 1) // per_page)
-    page = max(0, min(page, total_pages - 1))
-    start = page * per_page
-    chunk = clans[start:start + per_page]
-    text = f"{EMO_CLAN_HEADER} <b>СПИСОК КЛАНОВ</b> (стр. {page+1}/{total_pages})\n\n"
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    for i, c in enumerate(chunk, start=start + 1):
-        members = get_clan_member_count(c['id'])
-        crown = render_leader_crown(c)
-        name_render = render_clan_name(c)
-        text += f"{i}. {crown} {name_render} — {members}/{c['max_members']}\n"
-        markup.add(btn(f"{c['name']} ({members}/{c['max_members']})", callback_data=f"clan_info_{c['id']}", style='primary'))
-    nav = []
-    if page > 0:
-        nav.append(btn("◀️", callback_data=f"clans_page_{page-1}", style='primary'))
-    if page < total_pages - 1:
-        nav.append(btn("▶️", callback_data=f"clans_page_{page+1}", style='primary'))
-    if nav:
-        markup.row(*nav)
-    markup.add(btn("🔍 Поиск по названию", callback_data="clan_search_start", style='primary'))
-    return text, markup
-
-
-@bot.message_handler(func=lambda m: m.text and m.text.strip().lower() == 'кланы')
-def cmd_clans(message):
-    try:
-        text, markup = build_clans_list_text(0)
-        if markup is None:
-            safe_send(message.chat.id, text, parse_mode='HTML')
-        else:
-            safe_send(message.chat.id, text, parse_mode='HTML', reply_markup=markup)
-    except Exception as e:
-        print(f"[CLANS CMD ERR] {e}")
-        safe_send(message.chat.id, f"❌ Ошибка кланов: {e}")
-
-
-def build_my_clan_text(user_id):
-    clan = get_user_clan(user_id)
-    if not clan:
-        text = f"{EMO_CLAN_HEADER} <b>МОЙ КЛАН</b>\n\n<i>У тебя нет клана.</i>"
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(btn(f"🟢 Создать клан — {CLAN_CREATE_COST:,}", callback_data="clan_create_start", style='success'))
-        return text, markup
-    members = get_clan_members(clan['id'])
-    is_leader = (user_id == clan['leader_id'])
-    crown = render_leader_crown(clan)
-    emoji_prefix = ''
-    if clan.get('emoji_id'):
-        emoji_prefix = f'<tg-emoji emoji-id="{clan["emoji_id"]}">{clan.get("emoji_fallback") or "🏰"}</tg-emoji>'
-    text = f"{emoji_prefix}<b>{clan['name']}</b>\n"
-    text += f"{crown} Лидер: {get_user_display_by_id(clan['leader_id'])}\n"
-    text += f"👥 Участники: {len(members)}/{clan['max_members']}\n"
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(btn("👥 Участники", callback_data=f"clan_members_{clan['id']}", style='primary'))
-    if is_leader:
-        markup.add(btn(f"➕ Расширить — {CLAN_SLOT_COST:,}", callback_data=f"clan_expand_{clan['id']}", style='primary'))
-        markup.add(btn("👑 Передать клан", callback_data=f"clan_transfer_{clan['id']}", style='primary'))
-        markup.add(btn("🗑 Распустить клан", callback_data=f"clan_disband_{clan['id']}", style='danger'))
-    else:
-        markup.add(btn("🔴 Выйти из клана", callback_data=f"clan_leave_{clan['id']}", style='danger'))
-    return text, markup
-
-
-@bot.message_handler(func=lambda m: m.text and m.text.strip().lower() in ('клан', 'мой клан'))
-def cmd_my_clan(message):
-    try:
-        text, markup = build_my_clan_text(message.from_user.id)
-        safe_send(message.chat.id, text, parse_mode='HTML', reply_markup=markup)
-    except Exception as e:
-        print(f"[MYCLAN ERR] {e}")
-        safe_send(message.chat.id, f"❌ Ошибка: {e}")
-
-
 # ---------- ГЛАВНОЕ МЕНЮ ----------
 
 def get_main_menu(user):
@@ -1411,8 +983,7 @@ def build_games_list():
         f"{EMO_FLOOR} <b>Этажи</b> — <code>этажи [ставка]</code>\n{DIV_SOLO_LINE}\n"
         f"{EMO_SOLO_HEADER}\n\n"
         f"{EMO_BULB} <i>Вместо ставки можно писать <b>вб</b></i>\n"
-        f"{EMO_BULB} Правила: <b>правила</b>\n\n"
-        f"{EMO_CLAN} <b>КЛАНЫ</b> — команды <code>кланы</code> / <code>клан</code>"
+        f"{EMO_BULB} Правила: <b>правила</b>"
     )
 
 
@@ -1927,556 +1498,6 @@ def show_games_callback(call):
     safe_answer(call.id)
 
 
-# ---------- КЛАНЫ (callback) ----------
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("clans_page_"))
-def clans_page_cb(call):
-    page = int(call.data.split("_")[2])
-    text, markup = build_clans_list_text(page)
-    if markup is None:
-        safe_edit(call.message.chat.id, call.message.message_id, text, parse_mode='HTML')
-    else:
-        safe_edit(call.message.chat.id, call.message.message_id, text, parse_mode='HTML', reply_markup=markup)
-    safe_answer(call.id)
-
-
-@bot.callback_query_handler(func=lambda call: call.data == "clan_search_start")
-def clan_search_start(call):
-    msg = safe_send(call.message.chat.id, "🔍 Напиши название клана:", parse_mode='HTML')
-    if msg:
-        bot.register_next_step_handler(msg, process_clan_search)
-    safe_answer(call.id)
-
-
-def process_clan_search(message):
-    q = (message.text or "").strip()
-    if not q:
-        return
-    results = search_clans(q)
-    if not results:
-        safe_send(message.chat.id, f"{EMO_CANCEL} Не найден «{q}».", parse_mode='HTML')
-        return
-    text = f"🔍 <b>РЕЗУЛЬТАТЫ ({len(results)}):</b>\n\n"
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    for c in results[:20]:
-        m = get_clan_member_count(c['id'])
-        crown = render_leader_crown(c)
-        name_render = render_clan_name(c)
-        text += f"• {crown} {name_render} — {m}/{c['max_members']}\n"
-        markup.add(btn(f"{c['name']} ({m}/{c['max_members']})", callback_data=f"clan_info_{c['id']}", style='primary'))
-    safe_send(message.chat.id, text, parse_mode='HTML', reply_markup=markup)
-
-
-clan_create_temp = {}
-
-
-@bot.callback_query_handler(func=lambda call: call.data == "clan_create_start")
-def clan_create_start(cb):
-    user_id = cb.from_user.id
-    if get_user_clan(user_id):
-        safe_answer(cb.id, "❌ У тебя уже есть клан!", show_alert=True)
-        return
-    user = get_or_create_user(user_id, "", "")
-    if user['balance'] < CLAN_CREATE_COST:
-        safe_answer(cb.id, f"❌ Нужно {CLAN_CREATE_COST:,}, у тебя {user['balance']:,}", show_alert=True)
-        return
-    show_clan_emoji_picker(cb.message.chat.id, cb.message.message_id, 0)
-    safe_answer(cb.id)
-
-
-def show_clan_emoji_picker(chat_id, message_id, page):
-    emojis = get_clan_emojis()
-    if not emojis:
-        safe_edit(chat_id, message_id,
-                  f"{EMO_CLAN_HEADER} <b>СОЗДАНИЕ КЛАНА</b>\n\n❌ Нет символов. Обратитесь к админу.",
-                  parse_mode='HTML')
-        return
-    per_page = CLAN_EMOJI_PER_PAGE
-    total_pages = max(1, (len(emojis) + per_page - 1) // per_page)
-    page = max(0, min(page, total_pages - 1))
-    chunk = emojis[page * per_page:(page + 1) * per_page]
-    text = (f"{EMO_CLAN_HEADER} <b>СОЗДАНИЕ КЛАНА</b>\n"
-            f"{EMO_NOX} Цена: <b>{CLAN_CREATE_COST:,}</b>\n\n"
-            f"Выбери символ (стр. {page+1}/{total_pages}):")
-    markup = types.InlineKeyboardMarkup(row_width=5)
-    row = []
-    for e in chunk:
-        row.append(btn(' ', callback_data=f"clan_emoji_pick_{e['id']}", style='primary', icon=e['emoji_id']))
-        if len(row) == 5:
-            markup.row(*row)
-            row = []
-    if row:
-        markup.row(*row)
-    nav = []
-    if page > 0:
-        nav.append(btn("◀️", callback_data=f"clan_pick_page_{page-1}", style='primary'))
-    if page < total_pages - 1:
-        nav.append(btn("▶️", callback_data=f"clan_pick_page_{page+1}", style='primary'))
-    if nav:
-        markup.row(*nav)
-    markup.add(btn("Отмена", callback_data="clan_create_cancel", style='danger'))
-    safe_edit(chat_id, message_id, text, parse_mode='HTML', reply_markup=markup)
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("clan_pick_page_"))
-def clan_pick_page(call):
-    page = int(call.data.split("_")[3])
-    show_clan_emoji_picker(call.message.chat.id, call.message.message_id, page)
-    safe_answer(call.id)
-
-
-@bot.callback_query_handler(func=lambda call: call.data == "clan_create_cancel")
-def clan_create_cancel(call):
-    try:
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-    except Exception:
-        pass
-    safe_answer(call.id, "Отменено")
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("clan_emoji_pick_"))
-def clan_emoji_pick(call):
-    user_id = call.from_user.id
-    if get_user_clan(user_id):
-        safe_answer(call.id, "❌ Уже есть клан!", show_alert=True)
-        return
-    try:
-        emoji_row_id = int(call.data.split("_")[3])
-    except Exception:
-        safe_answer(call.id, "❌", show_alert=True)
-        return
-    conn = get_db_connection()
-    cursor = db_cursor(conn)
-    cursor.execute('SELECT emoji_id, fallback FROM clan_emojis WHERE id = %s', (emoji_row_id,))
-    row = cursor.fetchone()
-    conn.close()
-    if not row:
-        safe_answer(call.id, "❌ Не найден", show_alert=True)
-        return
-    clan_create_temp[user_id] = {'emoji_id': row['emoji_id'], 'emoji_fallback': row['fallback']}
-    show_clan_crown_picker(call.message.chat.id, call.message.message_id, 0)
-    safe_answer(call.id)
-
-
-def show_clan_crown_picker(chat_id, message_id, page):
-    crowns = get_clan_crowns()
-    if not crowns:
-        safe_edit(chat_id, message_id,
-                  f"👑 <b>ВЫБЕРИ КОРОНУ</b>\n\n❌ Нет корон. Обратитесь к админу.",
-                  parse_mode='HTML')
-        return
-    per_page = CLAN_EMOJI_PER_PAGE
-    total_pages = max(1, (len(crowns) + per_page - 1) // per_page)
-    page = max(0, min(page, total_pages - 1))
-    chunk = crowns[page * per_page:(page + 1) * per_page]
-    text = f"👑 <b>ВЫБЕРИ КОРОНУ</b>\n\nСтр. {page+1}/{total_pages}:"
-    markup = types.InlineKeyboardMarkup(row_width=5)
-    row = []
-    for e in chunk:
-        row.append(btn(' ', callback_data=f"clan_crown_pick_{e['id']}", style='primary', icon=e['emoji_id']))
-        if len(row) == 5:
-            markup.row(*row)
-            row = []
-    if row:
-        markup.row(*row)
-    nav = []
-    if page > 0:
-        nav.append(btn("◀️", callback_data=f"clan_crown_page_{page-1}", style='primary'))
-    if page < total_pages - 1:
-        nav.append(btn("▶️", callback_data=f"clan_crown_page_{page+1}", style='primary'))
-    if nav:
-        markup.row(*nav)
-    markup.add(btn("Отмена", callback_data="clan_create_cancel", style='danger'))
-    safe_edit(chat_id, message_id, text, parse_mode='HTML', reply_markup=markup)
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("clan_crown_page_"))
-def clan_crown_page(call):
-    page = int(call.data.split("_")[3])
-    show_clan_crown_picker(call.message.chat.id, call.message.message_id, page)
-    safe_answer(call.id)
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("clan_crown_pick_"))
-def clan_crown_pick(call):
-    user_id = call.from_user.id
-    if get_user_clan(user_id):
-        safe_answer(call.id, "❌ Уже есть клан!", show_alert=True)
-        return
-    try:
-        crown_row_id = int(call.data.split("_")[3])
-    except Exception:
-        safe_answer(call.id, "❌", show_alert=True)
-        return
-    conn = get_db_connection()
-    cursor = db_cursor(conn)
-    cursor.execute('SELECT emoji_id, fallback FROM clan_crowns WHERE id = %s', (crown_row_id,))
-    row = cursor.fetchone()
-    conn.close()
-    if not row:
-        safe_answer(call.id, "❌ Корона не найдена", show_alert=True)
-        return
-    if user_id not in clan_create_temp:
-        safe_answer(call.id, "❌ Сначала выбери символ", show_alert=True)
-        return
-    clan_create_temp[user_id]['crown_id'] = row['emoji_id']
-    clan_create_temp[user_id]['crown_fallback'] = row['fallback']
-    msg = safe_send(call.message.chat.id, "✍️ Напиши название клана\n<i>(до 20 символов)</i>", parse_mode='HTML')
-    if msg:
-        bot.register_next_step_handler(msg, process_clan_name)
-    safe_answer(call.id)
-
-
-def process_clan_name(message):
-    user_id = message.from_user.id
-    name = (message.text or "").strip()
-    picked = clan_create_temp.get(user_id)
-    if not picked or 'emoji_id' not in picked or 'crown_id' not in picked:
-        safe_send(message.chat.id, f"{EMO_CANCEL} Ошибка. Начни заново.", parse_mode='HTML')
-        return
-    if not name or len(name) > 20:
-        safe_send(message.chat.id, f"{EMO_CANCEL} Название 1-20 символов.", parse_mode='HTML')
-        return
-    if get_clan_by_name(name):
-        safe_send(message.chat.id, f"{EMO_CANCEL} Занято.", parse_mode='HTML')
-        return
-    if get_user_clan(user_id):
-        safe_send(message.chat.id, f"{EMO_CANCEL} У тебя уже есть клан.", parse_mode='HTML')
-        return
-    user = get_or_create_user(user_id, "", "")
-    if user['balance'] < CLAN_CREATE_COST:
-        safe_send(message.chat.id, f"{EMO_CANCEL} Недостаточно! Нужно {CLAN_CREATE_COST:,}.", parse_mode='HTML')
-        return
-    update_balance(user_id, -CLAN_CREATE_COST)
-    create_clan(name, picked['emoji_id'], picked['emoji_fallback'],
-                picked['crown_id'], picked['crown_fallback'], user_id)
-    clan_create_temp.pop(user_id, None)
-    emoji_html = f'<tg-emoji emoji-id="{picked["emoji_id"]}">{picked["emoji_fallback"] or "🏰"}</tg-emoji>'
-    crown_html = f'<tg-emoji emoji-id="{picked["crown_id"]}">{picked["crown_fallback"] or "👑"}</tg-emoji>'
-    safe_send(message.chat.id,
-              f"{EMO_SAFE} Клан {emoji_html}<b>{name}</b> создан!\n"
-              f"{crown_html} Ты лидер\n👥 1/{CLAN_BASE_SLOTS}\n"
-              f"{EMO_NOX} Списано: <b>{CLAN_CREATE_COST:,}</b>",
-              parse_mode='HTML')
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("clan_info_"))
-def clan_info_cb(call):
-    clan_id = int(call.data.split("_")[2])
-    clan = get_clan_by_id(clan_id)
-    if not clan:
-        safe_answer(call.id, "❌ Не найден", show_alert=True)
-        return
-    members_count = get_clan_member_count(clan_id)
-    crown = render_leader_crown(clan)
-    emoji_prefix = f'<tg-emoji emoji-id="{clan["emoji_id"]}">{clan.get("emoji_fallback") or "🏰"}</tg-emoji>' if clan.get('emoji_id') else ''
-    text = f"{emoji_prefix}<b>{clan['name']}</b>\n"
-    text += f"{crown} Лидер: {get_user_display_by_id(clan['leader_id'])}\n"
-    text += f"👥 {members_count}/{clan['max_members']}\n"
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    user_clan = get_user_clan(call.from_user.id)
-    if user_clan and user_clan['id'] == clan_id:
-        markup.add(btn("Это твой клан", callback_data="ignore", style='success'))
-    elif user_clan:
-        markup.add(btn("❌ Ты уже в другом клане", callback_data="ignore", style='danger'))
-    elif members_count >= clan['max_members']:
-        markup.add(btn("❌ Мест нет", callback_data="ignore", style='danger'))
-    else:
-        markup.add(btn("🟢 Вступить", callback_data=f"clan_join_{clan_id}", style='success'))
-    safe_edit(call.message.chat.id, call.message.message_id, text, parse_mode='HTML', reply_markup=markup)
-    safe_answer(call.id)
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("clan_join_"))
-def clan_join_cb(call):
-    user_id = call.from_user.id
-    clan_id = int(call.data.split("_")[2])
-    clan = get_clan_by_id(clan_id)
-    if not clan:
-        safe_answer(call.id, "❌", show_alert=True)
-        return
-    if get_user_clan(user_id):
-        safe_answer(call.id, "❌ Уже в клане!", show_alert=True)
-        return
-    if get_clan_member_count(clan_id) >= clan['max_members']:
-        safe_answer(call.id, "❌ Мест нет", show_alert=True)
-        return
-    if not add_clan_request(clan_id, user_id):
-        safe_answer(call.id, "⏳ Заявка отправлена", show_alert=True)
-        return
-    requester = get_or_create_user(user_id, call.from_user.username, call.from_user.first_name)
-    req_display = get_user_display(requester)
-    crown = render_leader_crown(clan)
-    emoji_prefix = f'<tg-emoji emoji-id="{clan["emoji_id"]}">{clan.get("emoji_fallback") or "🏰"}</tg-emoji>' if clan.get('emoji_id') else ''
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        btn("🟢 Подтвердить", callback_data=f"clan_req_ok_{clan_id}_{user_id}", style='success'),
-        btn("🔴 Отклонить", callback_data=f"clan_req_no_{clan_id}_{user_id}", style='danger')
-    )
-    safe_send(call.message.chat.id,
-              f"{EMO_REPORT} <b>ЗАЯВКА</b>\n\n👤 {req_display} → {emoji_prefix}<b>{clan['name']}</b>\n\n"
-              f"Лидер {crown}: подтверди/отклони",
-              parse_mode='HTML', reply_markup=markup)
-    safe_answer(call.id, "⏳ Отправлена")
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("clan_req_ok_"))
-def clan_req_ok(call):
-    parts = call.data.split("_")
-    clan_id = int(parts[3])
-    user_id = int(parts[4])
-    clan = get_clan_by_id(clan_id)
-    if not clan or call.from_user.id != clan['leader_id']:
-        safe_answer(call.id, "❌ Только лидер", show_alert=True)
-        return
-    if get_clan_member_count(clan_id) >= clan['max_members']:
-        safe_answer(call.id, "❌ Мест нет", show_alert=True)
-        return
-    if get_user_clan(user_id):
-        remove_clan_request(clan_id, user_id)
-        safe_answer(call.id, "Уже в другом клане", show_alert=True)
-        return
-    add_clan_member(clan_id, user_id)
-    remove_clan_request(clan_id, user_id)
-    safe_answer(call.id, "✅ Принят")
-    try:
-        bot.send_message(user_id, f"✅ Тебя приняли в клан {render_clan_name(clan)}!", parse_mode='HTML')
-    except Exception:
-        pass
-    try:
-        safe_edit(call.message.chat.id, call.message.message_id,
-                  f"✅ {get_user_display_by_id(user_id)} принят.", parse_mode='HTML')
-    except Exception:
-        pass
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("clan_req_no_"))
-def clan_req_no(call):
-    parts = call.data.split("_")
-    clan_id = int(parts[3])
-    user_id = int(parts[4])
-    clan = get_clan_by_id(clan_id)
-    if not clan or call.from_user.id != clan['leader_id']:
-        safe_answer(call.id, "❌ Только лидер", show_alert=True)
-        return
-    remove_clan_request(clan_id, user_id)
-    safe_answer(call.id, "❌ Отклонено")
-    try:
-        bot.send_message(user_id, f"❌ Отклонено из {render_clan_name(clan)}.", parse_mode='HTML')
-    except Exception:
-        pass
-    try:
-        safe_edit(call.message.chat.id, call.message.message_id,
-                  f"❌ Заявка {get_user_display_by_id(user_id)} отклонена.", parse_mode='HTML')
-    except Exception:
-        pass
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("clan_members_"))
-def clan_members_cb(call):
-    clan_id = int(call.data.split("_")[2])
-    clan = get_clan_by_id(clan_id)
-    if not clan:
-        safe_answer(call.id, "❌", show_alert=True)
-        return
-    members = get_clan_members(clan_id)
-    crown = render_leader_crown(clan)
-    emoji_prefix = f'<tg-emoji emoji-id="{clan["emoji_id"]}">{clan.get("emoji_fallback") or "🏰"}</tg-emoji>' if clan.get('emoji_id') else ''
-    text = f"{emoji_prefix}<b>{clan['name']}</b>\n👥 {len(members)}/{clan['max_members']}\n\n"
-    text += f"{crown} <b>Лидер:</b>\n• {get_user_display_by_id(clan['leader_id'])}\n\n"
-    others = [m for m in members if m['user_id'] != clan['leader_id']]
-    if others:
-        text += "<b>Участники:</b>\n"
-        for m in others:
-            text += f"• {get_user_display_by_id(m['user_id'])}\n"
-    markup = types.InlineKeyboardMarkup()
-    markup.add(btn("Назад", callback_data=f"clan_back_{clan_id}", style='primary', icon=ICO_BACK))
-    safe_edit(call.message.chat.id, call.message.message_id, text, parse_mode='HTML', reply_markup=markup)
-    safe_answer(call.id)
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("clan_back_"))
-def clan_back_cb(call):
-    text, markup = build_my_clan_text(call.from_user.id)
-    safe_edit(call.message.chat.id, call.message.message_id, text, parse_mode='HTML', reply_markup=markup)
-    safe_answer(call.id)
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("clan_expand_") and not call.data.startswith("clan_expand_ok_"))
-def clan_expand_cb(call):
-    clan_id = int(call.data.split("_")[2])
-    clan = get_clan_by_id(clan_id)
-    if not clan or call.from_user.id != clan['leader_id']:
-        safe_answer(call.id, "❌ Только лидер", show_alert=True)
-        return
-    user = get_or_create_user(call.from_user.id, "", "")
-    text = (f"➕ <b>Расширение</b>\n\n👥 {clan['max_members']} → {clan['max_members']+1}\n"
-            f"{EMO_NOX} Цена: <b>{CLAN_SLOT_COST:,}</b>\n💳 Баланс: <code>{user['balance']:,}</code>")
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        btn("🟢 Подтвердить", callback_data=f"clan_expand_ok_{clan_id}", style='success'),
-        btn("🔴 Отмена", callback_data=f"clan_back_{clan_id}", style='danger')
-    )
-    safe_edit(call.message.chat.id, call.message.message_id, text, parse_mode='HTML', reply_markup=markup)
-    safe_answer(call.id)
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("clan_expand_ok_"))
-def clan_expand_ok(call):
-    clan_id = int(call.data.split("_")[3])
-    clan = get_clan_by_id(clan_id)
-    if not clan or call.from_user.id != clan['leader_id']:
-        safe_answer(call.id, "❌ Только лидер", show_alert=True)
-        return
-    user = get_or_create_user(call.from_user.id, "", "")
-    if user['balance'] < CLAN_SLOT_COST:
-        safe_answer(call.id, f"❌ Нужно {CLAN_SLOT_COST:,}", show_alert=True)
-        return
-    update_balance(call.from_user.id, -CLAN_SLOT_COST)
-    expand_clan(clan_id)
-    new_clan = get_clan_by_id(clan_id)
-    safe_answer(call.id, f"✅ Теперь {new_clan['max_members']} мест", show_alert=True)
-    text, markup = build_my_clan_text(call.from_user.id)
-    safe_edit(call.message.chat.id, call.message.message_id, text, parse_mode='HTML', reply_markup=markup)
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("clan_transfer_") and not call.data.startswith("clan_transfer_to_"))
-def clan_transfer_cb(call):
-    try:
-        clan_id = int(call.data.split("_")[2])
-    except Exception:
-        safe_answer(call.id, "❌", show_alert=True)
-        return
-    clan = get_clan_by_id(clan_id)
-    if not clan or call.from_user.id != clan['leader_id']:
-        safe_answer(call.id, "❌ Только лидер", show_alert=True)
-        return
-    members = get_clan_members(clan_id)
-    others = [m for m in members if m['user_id'] != clan['leader_id']]
-    if not others:
-        safe_answer(call.id, "❌ Нет участников", show_alert=True)
-        return
-    text = f"👑 <b>ПЕРЕДАТЬ КЛАН</b>\n\nКому передать <b>{clan['name']}</b>?\n\n"
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    for m in others:
-        clean = get_clean_name(m['user_id'])
-        text += f"• {get_user_display_by_id(m['user_id'])}\n"
-        markup.add(btn(clean, callback_data=f"clan_transfer_to_{clan_id}_{m['user_id']}", style='primary'))
-    markup.add(btn("Отмена", callback_data=f"clan_back_{clan_id}", style='danger'))
-    safe_edit(call.message.chat.id, call.message.message_id, text, parse_mode='HTML', reply_markup=markup)
-    safe_answer(call.id)
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("clan_transfer_to_"))
-def clan_transfer_to(call):
-    parts = call.data.split("_")
-    clan_id = int(parts[3])
-    new_leader = int(parts[4])
-    clan = get_clan_by_id(clan_id)
-    if not clan or call.from_user.id != clan['leader_id']:
-        safe_answer(call.id, "❌ Только лидер", show_alert=True)
-        return
-    members = [m['user_id'] for m in get_clan_members(clan_id)]
-    if new_leader not in members:
-        safe_answer(call.id, "❌ Не в клане", show_alert=True)
-        return
-    transfer_clan(clan_id, new_leader)
-    safe_answer(call.id, "✅ Передан", show_alert=True)
-    try:
-        bot.send_message(new_leader, f"👑 Тебе передали клан {render_clan_name(clan)}!", parse_mode='HTML')
-    except Exception:
-        pass
-    try:
-        safe_edit(call.message.chat.id, call.message.message_id,
-                  f"✅ Клан передан {get_user_display_by_id(new_leader)}.", parse_mode='HTML')
-    except Exception:
-        pass
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("clan_disband_") and not call.data.startswith("clan_disband_ok_"))
-def clan_disband_cb(call):
-    try:
-        clan_id = int(call.data.split("_")[2])
-    except Exception:
-        safe_answer(call.id, "❌", show_alert=True)
-        return
-    clan = get_clan_by_id(clan_id)
-    if not clan or call.from_user.id != clan['leader_id']:
-        safe_answer(call.id, "❌ Только лидер", show_alert=True)
-        return
-    emoji_prefix = f'<tg-emoji emoji-id="{clan["emoji_id"]}">{clan.get("emoji_fallback") or "🏰"}</tg-emoji>' if clan.get('emoji_id') else ''
-    members_count = get_clan_member_count(clan_id)
-    text = (f"⚠️ <b>РАСПУСТИТЬ?</b>\n\n{emoji_prefix}<b>{clan['name']}</b> ({members_count}/{clan['max_members']})\n\n"
-            f"<b>Действие необратимо.</b>")
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        btn("🔴 Да", callback_data=f"clan_disband_ok_{clan_id}", style='danger'),
-        btn("🟢 Отмена", callback_data=f"clan_back_{clan_id}", style='success')
-    )
-    safe_edit(call.message.chat.id, call.message.message_id, text, parse_mode='HTML', reply_markup=markup)
-    safe_answer(call.id)
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("clan_disband_ok_"))
-def clan_disband_ok(call):
-    clan_id = int(call.data.split("_")[3])
-    clan = get_clan_by_id(clan_id)
-    if not clan or call.from_user.id != clan['leader_id']:
-        safe_answer(call.id, "❌ Только лидер", show_alert=True)
-        return
-    members = get_clan_members(clan_id)
-    for m in members:
-        try:
-            bot.send_message(m['user_id'], f"⚠️ Клан {render_clan_name(clan)} распущен.", parse_mode='HTML')
-        except Exception:
-            pass
-    delete_clan(clan_id)
-    safe_answer(call.id, "Распущен", show_alert=True)
-    try:
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-    except Exception:
-        pass
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("clan_leave_"))
-def clan_leave_cb(call):
-    clan_id = int(call.data.split("_")[2])
-    clan = get_clan_by_id(clan_id)
-    if not clan:
-        safe_answer(call.id, "❌", show_alert=True)
-        return
-    user_clan = get_user_clan(call.from_user.id)
-    if not user_clan or user_clan['id'] != clan_id:
-        safe_answer(call.id, "❌ Ты не в этом клане", show_alert=True)
-        return
-    if call.from_user.id == clan['leader_id']:
-        members = get_clan_members(clan_id)
-        others = [m for m in members if m['user_id'] != clan['leader_id']]
-        if others:
-            text = f"👑 Ты лидер. Передай клан или распусти:"
-            markup = types.InlineKeyboardMarkup(row_width=1)
-            for m in others:
-                clean = get_clean_name(m['user_id'])
-                markup.add(btn(f"Передать: {clean}", callback_data=f"clan_transfer_to_{clan_id}_{m['user_id']}", style='primary'))
-            markup.add(btn("🗑 Распустить", callback_data=f"clan_disband_{clan_id}", style='danger'))
-            markup.add(btn("Отмена", callback_data=f"clan_back_{clan_id}", style='success'))
-            safe_edit(call.message.chat.id, call.message.message_id, text, parse_mode='HTML', reply_markup=markup)
-            safe_answer(call.id)
-            return
-        else:
-            delete_clan(clan_id)
-            safe_answer(call.id, "Клан распущен (некому передать)", show_alert=True)
-            try:
-                bot.delete_message(call.message.chat.id, call.message.message_id)
-            except Exception:
-                pass
-            return
-    remove_clan_member(call.from_user.id)
-    safe_answer(call.id, "✅ Вышел из клана", show_alert=True)
-    text, markup = build_my_clan_text(call.from_user.id)
-    safe_edit(call.message.chat.id, call.message.message_id, text, parse_mode='HTML', reply_markup=markup)
-
-
 # ================== ИГРЫ ==================
 
 user_decks = {}
@@ -2602,7 +1623,7 @@ def _slots_send_result(chat_id, outcome, stake):
     win = int(stake * mult)
     if outcome == 'tangerine':
         text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
-                f"🍊 Возврат 30% → +{win:,} {EMO_NOX}")
+                f"🍊 Возврат 50% → +{win:,} {EMO_NOX}")
     elif outcome == 'kiwi':
         text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
                 f"🥝 x{mult}! → +{win:,} {EMO_NOX}")
@@ -2656,12 +1677,14 @@ def cmd_slots_chat(message):
         safe_send(chat_id, f"{EMO_BULB} Мало! Нужно {stake:,}, у тебя {user['balance']:,}", parse_mode='HTML')
         return
     update_balance(user_id, -stake)
+    balance_after = user['balance'] - stake
     try:
         chain = 0
         while True:
-            outcome = roll_slot_outcome()
+            outcome = roll_slot_outcome(balance_after)
             if outcome == 'clover':
                 update_balance(user_id, 1000)
+                balance_after += 1000
                 eid, fb = SLOT_SYMBOLS['clover']
                 syms = [emo_tag(eid, fb)] * 4
                 safe_send(chat_id,
@@ -4930,9 +3953,6 @@ def admin_panel(call):
     markup.add(btn("История промо", callback_data="adm_promo_history", style='success', icon=ICO_PROMO))
     markup.add(btn("Подписка", callback_data="adm_subscriptions", style='success', icon=ICO_CHANNEL))
     markup.add(btn("Чаты (подписка)", callback_data="adm_subscription_management", style='primary', icon=ICO_CHAT))
-    markup.add(btn("Символы кланов", callback_data="adm_clan_emojis", style='success', icon=ICO_PROMO))
-    markup.add(btn("Короны лидера", callback_data="adm_clan_crowns", style='success', icon=ICO_ADMIN))
-    markup.add(btn("Список кланов", callback_data="adm_clans_list", style='primary', icon=ICO_ADMIN))
     markup.add(btn("Перезагрузить бота", callback_data="adm_restart", style='danger', icon=ICO_TIMER))
     markup.add(btn("Назад", callback_data="back_to_menu", style='primary', icon=ICO_BACK))
     safe_edit(call.message.chat.id, call.message.message_id, f"{EMO_ADMIN} <b>Админ-панель</b>", reply_markup=markup, parse_mode='HTML')
@@ -5225,8 +4245,6 @@ def del_sub(call):
     adm_subscriptions(call)
 
 
-# ==== АДМИНКА: ЧАТЫ (СО ССЫЛКАМИ) ====
-
 @bot.callback_query_handler(func=lambda call: call.data == "adm_subscription_management" and call.from_user.id == OWNER_ID)
 def adm_subscription_management(call):
     bot_id = get_bot_id()
@@ -5298,116 +4316,6 @@ def toggle_subreq(call):
         conn.close()
     safe_answer(call.id, "✅")
     adm_subscription_management(call)
-
-
-# ---------- АДМИНКА: СИМВОЛЫ И КОРОНЫ ----------
-
-LAST_OWNER_SECTION = {'value': 'symbols'}
-
-
-@bot.callback_query_handler(func=lambda call: call.data == "adm_clan_emojis" and call.from_user.id == OWNER_ID)
-def adm_clan_emojis(call):
-    LAST_OWNER_SECTION['value'] = 'symbols'
-    show_clan_emojis_admin(call.message.chat.id, call.message.message_id)
-    safe_answer(call.id)
-
-
-def show_clan_emojis_admin(chat_id, mid):
-    emojis = get_clan_emojis()
-    text = f"🎨 <b>СИМВОЛЫ КЛАНОВ</b>\n\nЗагружено: <b>{len(emojis)}</b>\n\nКидай премиум-эмодзи в чат — бот сохранит."
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    markup.add(btn("🗑 Очистить все", callback_data="adm_clan_emojis_clear", style='danger', icon=ICO_CANCEL))
-    markup.add(btn("Назад", callback_data="admin_panel", style='primary', icon=ICO_BACK))
-    safe_edit(chat_id, mid, text, parse_mode='HTML', reply_markup=markup)
-
-
-@bot.callback_query_handler(func=lambda call: call.data == "adm_clan_emojis_clear" and call.from_user.id == OWNER_ID)
-def adm_clan_emojis_clear(call):
-    clear_clan_emojis()
-    safe_answer(call.id, "✅ Очищено", show_alert=True)
-    show_clan_emojis_admin(call.message.chat.id, call.message.message_id)
-
-
-@bot.callback_query_handler(func=lambda call: call.data == "adm_clan_crowns" and call.from_user.id == OWNER_ID)
-def adm_clan_crowns(call):
-    LAST_OWNER_SECTION['value'] = 'crowns'
-    show_clan_crowns_admin(call.message.chat.id, call.message.message_id)
-    safe_answer(call.id)
-
-
-def show_clan_crowns_admin(chat_id, mid):
-    crowns = get_clan_crowns()
-    text = f"👑 <b>КОРОНЫ ЛИДЕРА</b>\n\nЗагружено: <b>{len(crowns)}</b>\n\nКидай премиум-эмодзи в чат — бот сохранит."
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    markup.add(btn("🗑 Очистить все", callback_data="adm_clan_crowns_clear", style='danger', icon=ICO_CANCEL))
-    markup.add(btn("Назад", callback_data="admin_panel", style='primary', icon=ICO_BACK))
-    safe_edit(chat_id, mid, text, parse_mode='HTML', reply_markup=markup)
-
-
-@bot.callback_query_handler(func=lambda call: call.data == "adm_clan_crowns_clear" and call.from_user.id == OWNER_ID)
-def adm_clan_crowns_clear(call):
-    clear_clan_crowns()
-    safe_answer(call.id, "✅ Очищено", show_alert=True)
-    show_clan_crowns_admin(call.message.chat.id, call.message.message_id)
-
-
-@bot.message_handler(content_types=['text'], func=lambda m: m.from_user.id == OWNER_ID and m.chat.type == 'private')
-def owner_catch_emoji(message):
-    if not message.entities:
-        return
-    target = LAST_OWNER_SECTION['value']
-    added_sym, added_crn = 0, 0
-    for ent in message.entities:
-        try:
-            if ent.type == 'custom_emoji':
-                eid = ent.custom_emoji_id
-                fallback = message.text[ent.offset:ent.offset + ent.length] if message.text else '🏰'
-                if target == 'crowns':
-                    if add_clan_crown(eid, fallback):
-                        added_crn += 1
-                else:
-                    if add_clan_emoji(eid, fallback):
-                        added_sym += 1
-        except Exception:
-            continue
-    parts = []
-    if added_sym:
-        parts.append(f"символов: {added_sym}")
-    if added_crn:
-        parts.append(f"корон: {added_crn}")
-    if parts:
-        safe_send(message.chat.id, f"✅ Сохранено {', '.join(parts)}", parse_mode='HTML')
-
-
-@bot.callback_query_handler(func=lambda call: call.data == "adm_clans_list" and call.from_user.id == OWNER_ID)
-def adm_clans_list(call):
-    clans = get_all_clans()
-    text = f"{EMO_CLAN_HEADER} <b>СПИСОК КЛАНОВ</b>\n\nВсего: <b>{len(clans)}</b>\n\n"
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    for c in clans:
-        m = get_clan_member_count(c['id'])
-        crown = render_leader_crown(c)
-        text += f"• {crown} {render_clan_name(c)} — {m}/{c['max_members']} | лидер: {get_user_display_by_id(c['leader_id'])}\n"
-        markup.add(btn(f"🗑 Удалить {c['name']}", callback_data=f"adm_clan_del_{c['id']}", style='danger', icon=ICO_CANCEL))
-    markup.add(btn("Назад", callback_data="admin_panel", style='primary', icon=ICO_BACK))
-    safe_edit(call.message.chat.id, call.message.message_id, text, parse_mode='HTML', reply_markup=markup)
-    safe_answer(call.id)
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("adm_clan_del_") and call.from_user.id == OWNER_ID)
-def adm_clan_del(call):
-    clan_id = int(call.data.split("_")[3])
-    clan = get_clan_by_id(clan_id)
-    if clan:
-        members = get_clan_members(clan_id)
-        for m in members:
-            try:
-                bot.send_message(m['user_id'], f"⚠️ Клан {render_clan_name(clan)} удалён админом.", parse_mode='HTML')
-            except Exception:
-                pass
-        delete_clan(clan_id)
-    safe_answer(call.id, "✅ Удалён", show_alert=True)
-    adm_clans_list(call)
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "ignore")
