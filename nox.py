@@ -267,7 +267,7 @@ def safe_send(chat_id, text, **kwargs):
                 time.sleep(ra + 1)
                 continue
             err = str(e).lower()
-            if e.error_code == 400 and ('emoji' in err or 'entity' in err or 'parse' in err or 'not found' in err):
+            if e.error_code == 400:
                 clean = strip_custom_emojis(text)
                 try:
                     kw = dict(kwargs)
@@ -297,8 +297,7 @@ def safe_edit(chat_id, message_id, text, **kwargs):
                     pass
                 time.sleep(ra + 1)
                 continue
-            err = str(e).lower()
-            if e.error_code == 400 and ('emoji' in err or 'entity' in err or 'parse' in err or 'not found' in err):
+            if e.error_code == 400:
                 clean = strip_custom_emojis(text)
                 try:
                     kw = dict(kwargs)
@@ -330,6 +329,23 @@ def safe_answer(call_id, text=None, show_alert=False):
             bot.answer_callback_query(call_id)
     except Exception:
         pass
+
+
+def send_slot_result(chat_id, text):
+    """Гарантированная отправка результата слота: с premium emoji, при ошибке — без них."""
+    result = safe_send(chat_id, text, parse_mode='HTML')
+    if result is not None:
+        return result
+    clean = strip_custom_emojis(text)
+    try:
+        return bot.send_message(chat_id, clean)
+    except Exception as e:
+        print(f"[SLOT FALLBACK ERR] {e}")
+        try:
+            return bot.send_message(chat_id, clean, parse_mode=None)
+        except Exception as e2:
+            print(f"[SLOT FALLBACK2 ERR] {e2}")
+            return None
 
 
 # ================== ПУЛ ==================
@@ -447,8 +463,6 @@ def init_db():
         conn.close()
 
 
-# ---------- CO OWNERS ----------
-
 def is_co_owner(user_id):
     if user_id == OWNER_ID:
         return True
@@ -490,8 +504,6 @@ def get_co_owners():
     conn.close()
     return [dict(r) for r in rows]
 
-
-# ---------- ОБЩИЕ ----------
 
 def get_user_display(user):
     try:
@@ -747,8 +759,6 @@ def get_chat_link(chat_id):
         return None
 
 
-# ---------- ПОДПИСКИ ----------
-
 def get_required_subscriptions():
     conn = get_db_connection()
     cursor = db_cursor(conn)
@@ -899,8 +909,6 @@ def handle_subscribe_check(call):
         print(f"[ERROR] check_subscribe: {e}")
         safe_answer(call.id, "❌ Ошибка!", show_alert=True)
 
-
-# ---------- ГЛАВНОЕ МЕНЮ ----------
 
 def get_main_menu(user):
     markup = types.InlineKeyboardMarkup(row_width=2)
@@ -1329,8 +1337,6 @@ def cmd_top(message):
     safe_send(message.chat.id, text, parse_mode='HTML')
 
 
-# ---------- МЕНЮ ХЭНДЛЕРЫ ----------
-
 @bot.callback_query_handler(func=lambda call: call.data == "show_rules")
 def show_rules(call):
     text = (f"{EMO_RULES} <b>ПРАВИЛА NOXHUB</b>\n\n"
@@ -1649,38 +1655,39 @@ def _show_slots_row(symbols_list):
 
 
 def _slots_send_result(chat_id, outcome, stake):
+    """Отправляет результат слота гарантированно — через send_slot_result."""
     try:
         if outcome in ('lose', 'bad_lose'):
             pool = list(SLOT_SYMBOLS.values())
             random.shuffle(pool)
             syms = [emo_tag(eid, fb) for eid, fb in pool[:4]]
             text = f"[ {_show_slots_row(syms)} ]\nПроигрыш. -{stake:,} {EMO_NOX}"
-            safe_send(chat_id, text, parse_mode='HTML')
+            send_slot_result(chat_id, text)
             return
         if outcome == 'fifty':
             eid, fb = SLOT_SYMBOLS['fifty']
             syms = [emo_tag(eid, fb)] * 4
             win = int(stake * 0.5)
             text = f"[ {_show_slots_row(syms)} ]\nВозврат 50% → +{win:,} {EMO_NOX}"
-            safe_send(chat_id, text, parse_mode='HTML')
+            send_slot_result(chat_id, text)
             return
         if outcome == 'devstv':
             eid, fb = SLOT_SYMBOLS['devstv']
             syms = [emo_tag(eid, fb)] * 4
             text = f"[ {_show_slots_row(syms)} ]\nТы умрёшь девственником"
-            safe_send(chat_id, text, parse_mode='HTML')
+            send_slot_result(chat_id, text)
             return
         if outcome == 'minus2500':
             eid, fb = SLOT_SYMBOLS['minus2500']
             syms = [emo_tag(eid, fb)] * 4
-            text = f"[ {_show_slots_row(syms)} ]\nСтавка сгорела! -{stake:,} {EMO_NOX}"
-            safe_send(chat_id, text, parse_mode='HTML')
+            text = f"[ {_show_slots_row(syms)} ]\n-{stake + 2500:,} {EMO_NOX} — а чтоб жизнь малиной не казалась"
+            send_slot_result(chat_id, text)
             return
         if outcome == 'neutral':
             eid, fb = SLOT_SYMBOLS['neutral']
             syms = [emo_tag(eid, fb)] * 4
             text = f"[ {_show_slots_row(syms)} ]\nЗачем ты вообще родился"
-            safe_send(chat_id, text, parse_mode='HTML')
+            send_slot_result(chat_id, text)
             return
         eid, fb = SLOT_SYMBOLS[outcome]
         syms = [emo_tag(eid, fb)] * 4
@@ -1706,7 +1713,7 @@ def _slots_send_result(chat_id, outcome, stake):
             text = f"[ {_show_slots_row(syms)} ]\nx5 → +{win:,} {EMO_NOX}"
         else:
             text = f"[ {_show_slots_row(syms)} ]\nx{mult} → +{win:,} {EMO_NOX}"
-        safe_send(chat_id, text, parse_mode='HTML')
+        send_slot_result(chat_id, text)
     except Exception as e:
         print(f"[SLOT SEND ERR] {e}")
 
@@ -1760,7 +1767,7 @@ def cmd_slots_chat(message):
                 _slots_send_result(chat_id, 'devstv', stake)
                 break
             if outcome == 'minus2500':
-                # ставка уже списана, просто больше ничего не снимаем
+                update_balance(user_id, -2500)
                 _slots_send_result(chat_id, 'minus2500', stake)
                 break
             if outcome == 'neutral':
@@ -1771,14 +1778,13 @@ def cmd_slots_chat(message):
                 balance_after += 1000
                 eid, fb = SLOT_SYMBOLS['clover']
                 syms = [emo_tag(eid, fb)] * 4
-                safe_send(chat_id,
-                          f"[ {_show_slots_row(syms)} ]\n"
-                          f"ФРИ СПИН! +1,000 {EMO_NOX}\n"
-                          f"Крутим ещё (без списания)...",
-                          parse_mode='HTML')
+                send_slot_result(chat_id,
+                                 f"[ {_show_slots_row(syms)} ]\n"
+                                 f"ФРИ СПИН! +1,000 {EMO_NOX}\n"
+                                 f"Крутим ещё (без списания)...")
                 chain += 1
                 if chain >= 5:
-                    safe_send(chat_id, f"Цепочка из 5 фри спинов прервана.", parse_mode='HTML')
+                    send_slot_result(chat_id, f"Цепочка из 5 фри спинов прервана.")
                     break
                 continue
             if outcome == 'free25':
@@ -2932,7 +2938,7 @@ def start_ttt_match(cid, p1, p2, stake):
 
 def gen_ttt_board(board, mid):
     markup = types.InlineKeyboardMarkup(row_width=3)
-    symbols = {0: '1️⃣', 1: '2️⃣', 2: '3️⃣', 3: '4️⃣', 4: '5️⃣', 5: '6️⃣', 6: '7️⃣', 7: '8️⃣', 8: '9️⃣'}
+    symbols = {0:'1️⃣',1:'2️⃣',2:'3️⃣',3:'4️⃣',4:'5️⃣',5:'6️⃣',6:'7️⃣',7:'8️⃣',8:'9️⃣'}
     btns = []
     for i, cell in enumerate(board):
         if cell == '❌':
