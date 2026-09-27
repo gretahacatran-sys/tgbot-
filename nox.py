@@ -49,9 +49,9 @@ SUB_CACHE_TTL = 30
 BOT_ID_CACHE = {'id': None}
 
 SLOT_WEIGHTS = [
-    ('lose', 27), ('bad_lose', 30), ('fifty', 35), ('devstv', 6), ('minus2500', 1),
+    ('lose', 28.7), ('bad_lose', 30), ('fifty', 35), ('devstv', 6), ('minus2500', 1),
     ('kiwi', 32), ('cherry', 28), ('strawberry', 20), ('clover', 10), ('seven', 6),
-    ('new_1_2', 8), ('new_5', 1), ('free10', 2), ('diamond', 0.3),
+    ('new_1_2', 8), ('new_5', 1), ('free10', 0.3), ('diamond', 0.3),
     ('super_jackpot', 0.0000001), ('neutral', 10),
 ]
 SLOT_SYMBOLS = {
@@ -68,7 +68,7 @@ SLOT_MULT = {'cherry': 2.0, 'seven': 3.0, 'diamond': 10.0, 'strawberry': 2.5, 'k
              'new_1_2': 1.2, 'new_5': 5.0, 'super_jackpot': 100.0, 'fifty': 0.5}
 CLOVER_MIN_BALANCE = 500
 FREE_SPINS_COUNT = 10
-FREE_SPIN_MIN_BALANCE = 500
+FREE_SPIN_INTERVAL = 3
 
 
 def _slot_total_weight():
@@ -1083,9 +1083,9 @@ def build_games_list():
             f"{EMO_BULB} <i>вместо ставки <b>вб</b></i>")
 
 
-# ---------- BIO BONUS COMMAND ----------
+# ---------- BIO BONUS COMMAND (ТОЛЬКО В ЛС БОТА) ----------
 
-@bot.message_handler(func=lambda m: m.text and m.text.strip().lower() in
+@bot.message_handler(func=lambda m: m.chat.type == 'private' and m.text and m.text.strip().lower() in
                      ('бесплатные 5000 ноксов ежедневно', 'бесплатные 5000', '5000', 'ежедневные 5000'))
 def cmd_bio_bonus_info(message):
     user = get_or_create_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
@@ -1109,9 +1109,9 @@ def cmd_bio_bonus_info(message):
             text += f"{EMO_SAFE} <b>У тебя всё подключено!</b> ✅\n"
             text += f"{EMO_TIMER} Следующий бонус: через <b>{format_bio_bonus_time(get_bio_bonus_remaining_seconds(user))}</b>"
         else:
-            text += f"{EMO_BULB} Ссылка найдена! Следующее сообщение в чате — активирует бонус."
+            text += f"{EMO_BULB} Ссылка найдена! Напиши что-нибудь в @Nox_chatik — активирует бонус."
     else:
-        text += f"{EMO_CANCEL} <b>У тебя не подключено.</b>\nДобавь ссылку в Bio и напиши что-нибудь в чат."
+        text += f"{EMO_CANCEL} <b>У тебя не подключено.</b>\nДобавь ссылку в Bio и напиши что-нибудь в @Nox_chatik."
     safe_send(message.chat.id, text, parse_mode='HTML')
 
 
@@ -1159,7 +1159,7 @@ def bio_bonus_info_cb(call):
         rem = get_bio_bonus_remaining_seconds(user)
         safe_answer(call.id, f"🎁 Следующий +5,000 через {format_bio_bonus_time(rem)}", show_alert=True)
     else:
-        safe_answer(call.id, "❌ Не подключено. Напиши «бесплатные 5000» в чат.", show_alert=True)
+        safe_answer(call.id, "❌ Не подключено. В ЛС бота: «бесплатные 5000 ноксов ежедневно».", show_alert=True)
 
 
 def build_bonus_state(user):
@@ -1386,7 +1386,7 @@ def cmd_bonus(message):
     markup.add(btn(bl, callback_data=f"quick_bonus_{user['user_id']}", style='success', icon=bi))
     text = (f"{EMO_BONUS} <b>БОНУСЫ</b>\n\n1️⃣ Ежедневный — 850-1200 {EMO_NOX}\n"
             f"2️⃣ Каждые 10 мин — +{QUICK_BONUS_AMOUNT} {EMO_NOX}\n"
-            f"3️⃣ <b>5000 в день</b> — за ссылку в Bio (напиши <b>бесплатные 5000</b>)\n\n{EMO_BULB} Жми кнопку!")
+            f"3️⃣ <b>5000 в день</b> — за ссылку в Bio (в ЛС: <b>бесплатные 5000</b>)\n\n{EMO_BULB} Жми кнопку!")
     safe_send(message.chat.id, text, reply_markup=markup, parse_mode='HTML')
 
 
@@ -1413,7 +1413,7 @@ def cmd_top(message):
 @bot.callback_query_handler(func=lambda call: call.data == "show_rules")
 def show_rules(call):
     text = (f"{EMO_RULES} <b>ПРАВИЛА NOXHUB</b>\n\n{EMO_BULB} Все игры: <b>игры</b>\n\n"
-            f"<b>{EMO_BONUS} БОНУСЫ</b>\n   <code>бонус</code>\n   <code>бесплатные 5000</code>\n\n"
+            f"<b>{EMO_BONUS} БОНУСЫ</b>\n   <code>бонус</code>\n\n"
             f"<b>⚡ КОМАНДЫ</b>\n   {EMO_PROFILE} <code>профиль</code>\n   {EMO_NOX} <code>б</code>\n   {EMO_TROPHY} <code>топ богатых</code>\n\n"
             f"💬 @Nox_chatik | {EMO_CHANNEL} @NoxHubs")
     markup = types.InlineKeyboardMarkup()
@@ -1727,64 +1727,62 @@ def _show_slots_row(sl):
     return ' | '.join(sl)
 
 
-def _roll_and_show_free_spin(user_id, index, total):
-    user_fresh = get_or_create_user(user_id, "", "")
-    bal = user_fresh['balance']
-    fs = int(bal * 0.5) if bal > FREE_SPIN_MIN_BALANCE else 1
-    if fs < 1:
-        fs = 1
-    outcome = roll_slot_outcome(bal)
+def _roll_and_show_free_spin(user_id, stake, index, total):
+    """Один бесплатный фри спин на ту же ставку. Возвращает (текст, выигрыш)."""
+    outcome = roll_slot_outcome(0)
     pool = list(SLOT_SYMBOLS.values())
     random.shuffle(pool)
     syms = [emo_tag(eid, fb) for eid, fb in pool[:4]]
     row = f"[ {_show_slots_row(syms)} ]"
     if outcome in ('lose', 'bad_lose'):
-        return f"#{index}/{total} {row}\n   💀 Проигрыш (фри)", 0
+        return f"#{index}/{total} {row}\nПроигрыш (фри)", 0
     if outcome == 'fifty':
-        win = int(fs * 0.5)
+        win = int(stake * 0.5)
         update_balance(user_id, win)
-        return f"#{index}/{total} {row}\n   ⚖️ +{win:,}", win
+        return f"#{index}/{total} {row}\nВозврат 50% → +{win:,} {EMO_NOX} (фри)", win
     if outcome == 'devstv':
-        return f"#{index}/{total} {row}\n   💀 Ты умрёшь девственником (фри)", 0
+        return f"#{index}/{total} {row}\nТы умрёшь девственником (фри)", 0
     if outcome == 'minus2500':
-        update_balance(user_id, -2500)
-        return f"#{index}/{total} {row}\n   💀 -2,500 (фри)", -2500
+        return f"#{index}/{total} {row}\nПустой спин (фри)", 0
     if outcome == 'neutral':
-        return f"#{index}/{total} {row}\n   🖼️ Зачем ты родился (фри)", 0
+        return f"#{index}/{total} {row}\nЗачем ты родился (фри)", 0
     if outcome == 'clover':
         update_balance(user_id, 1000)
-        return f"#{index}/{total} {row}\n   🍀 +1,000 (фри)", 1000
+        return f"#{index}/{total} {row}\n+1,000 {EMO_NOX} (фри)", 1000
     if outcome == 'free10':
-        update_balance(user_id, 10000)
-        return f"#{index}/{total} {row}\n   🎁 +10,000 (фри)", 10000
+        return f"#{index}/{total} {row}\nПустой спин (фри)", 0
     if outcome in SLOT_MULT and outcome in SLOT_SYMBOLS:
         mult = SLOT_MULT[outcome]
-        win = int(fs * mult)
+        win = int(stake * mult)
         update_balance(user_id, win)
         if outcome == 'super_jackpot':
-            return f"#{index}/{total} {row}\n   💎💎💎 SUPER JACKPOT x100 → +{win:,} (фри)", win
+            return f"#{index}/{total} {row}\nSUPER JACKPOT x100 → +{win:,} {EMO_NOX} (фри)", win
         if outcome == 'diamond':
-            return f"#{index}/{total} {row}\n   💎 x10 → +{win:,} (фри)", win
-        return f"#{index}/{total} {row}\n   x{mult} → +{win:,} (фри)", win
-    return f"#{index}/{total} {row}\n   ⚠️ Неизвестный исход", 0
+            return f"#{index}/{total} {row}\nx10 → +{win:,} {EMO_NOX} (фри)", win
+        return f"#{index}/{total} {row}\nx{mult} → +{win:,} {EMO_NOX} (фри)", win
+    return f"#{index}/{total} {row}\nОшибка", 0
 
 
-def _run_free_spins(chat_id, user_id):
+def _run_free_spins(chat_id, user_id, stake):
+    """10 бесплатных фри спинов на ту же ставку, каждые 3 сек отдельным сообщением."""
+    try:
+        send_slot_result(chat_id, f"{EMO_BONUS} <b>10 ФРИ СПИНОВ</b> на {stake:,} {EMO_NOX} (без списания)")
+    except Exception:
+        pass
     total_win = 0
-    lines = []
     for i in range(1, FREE_SPINS_COUNT + 1):
         try:
-            text, gain = _roll_and_show_free_spin(user_id, i, FREE_SPINS_COUNT)
+            text, gain = _roll_and_show_free_spin(user_id, stake, i, FREE_SPINS_COUNT)
             total_win += gain
-            lines.append(text)
+            send_slot_result(chat_id, text)
         except Exception as e:
             print(f"[FREE SPIN ERR] {e}")
-            lines.append(f"#{i}/{FREE_SPINS_COUNT} ⚠️ Ошибка")
+        time.sleep(FREE_SPIN_INTERVAL)
     user_final = get_or_create_user(user_id, "", "")
-    header = f"{EMO_BONUS} <b>10 ФРИ СПИНОВ</b>\n\n"
-    body = "\n\n".join(lines)
-    footer = f"\n\n{EMO_NOX} <b>Итого:</b> +{total_win:,}\n{EMO_NOX} <b>Баланс:</b> {user_final['balance']:,}"
-    send_slot_result(chat_id, header + body + footer)
+    send_slot_result(chat_id,
+                     f"{EMO_TROPHY} <b>Фри спины готовы!</b>\n"
+                     f"{EMO_NOX} Итого: <b>+{total_win:,}</b>\n"
+                     f"{EMO_NOX} Баланс: <code>{user_final['balance']:,}</code>")
 
 
 def _slots_send_result(chat_id, outcome, stake):
@@ -1793,38 +1791,38 @@ def _slots_send_result(chat_id, outcome, stake):
             pool = list(SLOT_SYMBOLS.values())
             random.shuffle(pool)
             syms = [emo_tag(eid, fb) for eid, fb in pool[:4]]
-            text = f"[ {_show_slots_row(syms)} ]\n{EMO_CANCEL} Проигрыш. -{stake:,} {EMO_NOX}"
+            text = f"[ {_show_slots_row(syms)} ]\nПроигрыш. -{stake:,} {EMO_NOX}"
             send_slot_result(chat_id, text)
             return
         if outcome == 'fifty':
             eid, fb = SLOT_SYMBOLS['fifty']
             syms = [emo_tag(eid, fb)] * 4
             win = int(stake * 0.5)
-            text = f"[ {_show_slots_row(syms)} ]\n⚖️ Возврат 50% → +{win:,} {EMO_NOX}"
+            text = f"[ {_show_slots_row(syms)} ]\nВозврат 50% → +{win:,} {EMO_NOX}"
             send_slot_result(chat_id, text)
             return
         if outcome == 'devstv':
             eid, fb = SLOT_SYMBOLS['devstv']
             syms = [emo_tag(eid, fb)] * 4
-            text = f"[ {_show_slots_row(syms)} ]\n💀 Ты умрёшь девственником"
+            text = f"[ {_show_slots_row(syms)} ]\nТы умрёшь девственником"
             send_slot_result(chat_id, text)
             return
         if outcome == 'minus2500':
             eid, fb = SLOT_SYMBOLS['minus2500']
             syms = [emo_tag(eid, fb)] * 4
-            text = f"[ {_show_slots_row(syms)} ]\n💀 -{stake + 2500:,} {EMO_NOX}\nа чтоб жизнь малиной не казалась"
+            text = f"[ {_show_slots_row(syms)} ]\n-{stake + 2500:,} {EMO_NOX}\nа чтоб жизнь малиной не казалась"
             send_slot_result(chat_id, text)
             return
         if outcome == 'neutral':
             eid, fb = SLOT_SYMBOLS['neutral']
             syms = [emo_tag(eid, fb)] * 4
-            text = f"[ {_show_slots_row(syms)} ]\n🖼️ Зачем ты вообще родился"
+            text = f"[ {_show_slots_row(syms)} ]\nЗачем ты вообще родился"
             send_slot_result(chat_id, text)
             return
         if outcome == 'free10':
             eid, fb = SLOT_SYMBOLS['free10']
             syms = [emo_tag(eid, fb)] * 4
-            text = f"[ {_show_slots_row(syms)} ]\n🎁 10 ФРИ СПИНОВ! Ставка возвращена ✅"
+            text = f"[ {_show_slots_row(syms)} ]\n10 ФРИ СПИНОВ! Ставка возвращена"
             send_slot_result(chat_id, text)
             return
         if outcome in SLOT_MULT and outcome in SLOT_SYMBOLS:
@@ -1833,21 +1831,21 @@ def _slots_send_result(chat_id, outcome, stake):
             mult = SLOT_MULT[outcome]
             win = int(stake * mult)
             if outcome == 'super_jackpot':
-                text = f"[ {_show_slots_row(syms)} ]\n💎💎💎 SUPER JACKPOT x100 → +{win:,} {EMO_NOX}"
+                text = f"[ {_show_slots_row(syms)} ]\nSUPER JACKPOT x100 → +{win:,} {EMO_NOX}"
             elif outcome == 'diamond':
-                text = f"[ {_show_slots_row(syms)} ]\n💎 x10 → +{win:,} {EMO_NOX}"
+                text = f"[ {_show_slots_row(syms)} ]\nx10 → +{win:,} {EMO_NOX}"
             elif outcome == 'seven':
-                text = f"[ {_show_slots_row(syms)} ]\n7️⃣ x3 → +{win:,} {EMO_NOX}"
+                text = f"[ {_show_slots_row(syms)} ]\nx3 → +{win:,} {EMO_NOX}"
             elif outcome == 'strawberry':
-                text = f"[ {_show_slots_row(syms)} ]\n🍓 x2.5 → +{win:,} {EMO_NOX}"
+                text = f"[ {_show_slots_row(syms)} ]\nx2.5 → +{win:,} {EMO_NOX}"
             elif outcome == 'cherry':
-                text = f"[ {_show_slots_row(syms)} ]\n🍒 x2 → +{win:,} {EMO_NOX}"
+                text = f"[ {_show_slots_row(syms)} ]\nx2 → +{win:,} {EMO_NOX}"
             elif outcome == 'kiwi':
-                text = f"[ {_show_slots_row(syms)} ]\n🥝 x1.5 → +{win:,} {EMO_NOX}"
+                text = f"[ {_show_slots_row(syms)} ]\nx1.5 → +{win:,} {EMO_NOX}"
             elif outcome == 'new_1_2':
-                text = f"[ {_show_slots_row(syms)} ]\n✨ x1.2 → +{win:,} {EMO_NOX}"
+                text = f"[ {_show_slots_row(syms)} ]\nx1.2 → +{win:,} {EMO_NOX}"
             elif outcome == 'new_5':
-                text = f"[ {_show_slots_row(syms)} ]\n⭐ x5 → +{win:,} {EMO_NOX}"
+                text = f"[ {_show_slots_row(syms)} ]\nx5 → +{win:,} {EMO_NOX}"
             else:
                 text = f"[ {_show_slots_row(syms)} ]\nx{mult} → +{win:,} {EMO_NOX}"
             send_slot_result(chat_id, text)
@@ -1924,16 +1922,16 @@ def cmd_slots_chat(message):
                 bal += 1000
                 eid, fb = SLOT_SYMBOLS['clover']
                 syms = [emo_tag(eid, fb)] * 4
-                send_slot_result(cid, f"[ {_show_slots_row(syms)} ]\n🍀 ФРИ СПИН! +1,000 {EMO_NOX}\n🔄 Крутим ещё...")
+                send_slot_result(cid, f"[ {_show_slots_row(syms)} ]\nФРИ СПИН! +1,000 {EMO_NOX}\n🔄 Крутим ещё...")
                 chain += 1
                 if chain >= 5:
-                    send_slot_result(cid, "🍀 Цепочка из 5 фри спинов прервана.")
+                    send_slot_result(cid, "Цепочка из 5 фри спинов прервана.")
                     break
                 continue
             if outcome == 'free10':
                 update_balance(uid, stake)
                 _slots_send_result(cid, 'free10', stake)
-                _run_free_spins(cid, uid)
+                threading.Thread(target=_run_free_spins, args=(cid, uid, stake), daemon=True).start()
                 break
             if outcome in SLOT_MULT:
                 mult = SLOT_MULT[outcome]
