@@ -40,16 +40,11 @@ sub_check_cache = {}
 SUB_CACHE_TTL = 30
 BOT_ID_CACHE = {'id': None}
 
-# блокировка слотов: user_id -> timestamp до которого заблокировано
-slot_blocks = {}
-
-LOADING_EMOJI_ID = '5228788444230071758'
-
 SLOT_WEIGHTS = [
     ('lose', 26),
     ('bad_lose', 30),
     ('fifty', 35),
-    ('block', 6),
+    ('devstv', 6),
     ('minus2500', 3),
     ('kiwi', 32),
     ('cherry', 28),
@@ -75,7 +70,7 @@ SLOT_SYMBOLS = {
     'new_1_2': ('5262508344140119992', '✨'),
     'new_5': ('5355115746076672241', '⭐'),
     'fifty': ('5456173242765034256', '⚖️'),
-    'block': ('5211025120918785460', '🔒'),
+    'devstv': ('5211025120918785460', '💀'),
     'minus2500': ('5415718791185179701', '💀'),
     'bad_lose': ('5291842511210304612', '💀'),
     'neutral': ('5202177750282019573', '🖼️'),
@@ -93,7 +88,6 @@ SLOT_MULT = {
 }
 
 CLOVER_MIN_BALANCE = 500
-SLOT_BLOCK_SECONDS = 90
 
 
 def _slot_total_weight():
@@ -1638,32 +1632,14 @@ def _show_slots_row(symbols_list):
     return ' | '.join(symbols_list)
 
 
-def _slots_animate(chat_id, final_syms, final_text):
-    """Анимация: сначала 4 loading, потом каждую секунду открывается по одному символу."""
-    loading = emo_tag(LOADING_EMOJI_ID, '🔄')
-    row = [loading] * 4
-    msg = safe_send(chat_id, f"{EMO_SLOTS} [ {_show_slots_row(row)} ]", parse_mode='HTML')
-    if not msg:
-        return
-    mid = msg.message_id
-    current = [loading] * 4
-    for i, s in enumerate(final_syms):
-        time.sleep(1)
-        current[i] = s
-        safe_edit(chat_id, mid, f"{EMO_SLOTS} [ {_show_slots_row(current)} ]", parse_mode='HTML')
-    time.sleep(0.4)
-    safe_edit(chat_id, mid, final_text, parse_mode='HTML')
-
-
 def _slots_send_result(chat_id, outcome, stake):
-    # проигрыш (обычный или bad_lose) — 4 разных случайных символа
     if outcome in ('lose', 'bad_lose'):
         pool = list(SLOT_SYMBOLS.values())
         random.shuffle(pool)
         syms = [emo_tag(eid, fb) for eid, fb in pool[:4]]
         text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
                 f"{EMO_CANCEL} Проигрыш. -{stake:,} {EMO_NOX}")
-        _slots_animate(chat_id, syms, text)
+        safe_send(chat_id, text, parse_mode='HTML')
         return
     if outcome == 'fifty':
         eid, fb = SLOT_SYMBOLS['fifty']
@@ -1671,30 +1647,29 @@ def _slots_send_result(chat_id, outcome, stake):
         win = int(stake * 0.5)
         text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
                 f"⚖️ Возврат 50% → +{win:,} {EMO_NOX}")
-        _slots_animate(chat_id, syms, text)
+        safe_send(chat_id, text, parse_mode='HTML')
         return
-    if outcome == 'block':
-        eid, fb = SLOT_SYMBOLS['block']
+    if outcome == 'devstv':
+        eid, fb = SLOT_SYMBOLS['devstv']
         syms = [emo_tag(eid, fb)] * 4
         text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
-                f"🔒 Слоты заблокированы на 1:30!")
-        _slots_animate(chat_id, syms, text)
+                f"💀 Ты умрёшь девственником")
+        safe_send(chat_id, text, parse_mode='HTML')
         return
     if outcome == 'minus2500':
         eid, fb = SLOT_SYMBOLS['minus2500']
         syms = [emo_tag(eid, fb)] * 4
         text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
                 f"💀 -{stake + 2500:,} {EMO_NOX}! (ставка + 2500)")
-        _slots_animate(chat_id, syms, text)
+        safe_send(chat_id, text, parse_mode='HTML')
         return
     if outcome == 'neutral':
         eid, fb = SLOT_SYMBOLS['neutral']
         syms = [emo_tag(eid, fb)] * 4
         text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
                 f"🖼️ Зачем ты вообще родился")
-        _slots_animate(chat_id, syms, text)
+        safe_send(chat_id, text, parse_mode='HTML')
         return
-    # выигрышные
     eid, fb = SLOT_SYMBOLS[outcome]
     syms = [emo_tag(eid, fb)] * 4
     mult = SLOT_MULT[outcome]
@@ -1729,7 +1704,7 @@ def _slots_send_result(chat_id, outcome, stake):
     else:
         text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
                 f"🔥 x{mult} → +{win:,} {EMO_NOX}")
-    _slots_animate(chat_id, syms, text)
+    safe_send(chat_id, text, parse_mode='HTML')
 
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith('слот'))
@@ -1738,13 +1713,6 @@ def cmd_slots_chat(message):
         return
     user_id = message.from_user.id
     chat_id = message.chat.id
-
-    now = time.time()
-    block_until = slot_blocks.get(user_id, 0)
-    if block_until > now:
-        rem = int(block_until - now)
-        safe_send(chat_id, f"🔒 Слоты заблокированы. Осталось: {format_time(rem)}", parse_mode='HTML')
-        return
 
     if casino_in_progress.get(user_id, False):
         markup = types.InlineKeyboardMarkup()
@@ -1786,9 +1754,8 @@ def cmd_slots_chat(message):
                 update_balance(user_id, win)
                 _slots_send_result(chat_id, 'fifty', stake)
                 break
-            if outcome == 'block':
-                slot_blocks[user_id] = time.time() + SLOT_BLOCK_SECONDS
-                _slots_send_result(chat_id, 'block', stake)
+            if outcome == 'devstv':
+                _slots_send_result(chat_id, 'devstv', stake)
                 break
             if outcome == 'minus2500':
                 update_balance(user_id, -2500)
@@ -1802,11 +1769,11 @@ def cmd_slots_chat(message):
                 balance_after += 1000
                 eid, fb = SLOT_SYMBOLS['clover']
                 syms = [emo_tag(eid, fb)] * 4
-                _slots_animate(chat_id, syms,
-                               f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
-                               f"🍀 ФРИ СПИН! +1,000 {EMO_NOX}\n"
-                               f"🔄 Крутим ещё (без списания)...")
-                time.sleep(1)
+                safe_send(chat_id,
+                          f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
+                          f"🍀 ФРИ СПИН! +1,000 {EMO_NOX}\n"
+                          f"🔄 Крутим ещё (без списания)...",
+                          parse_mode='HTML')
                 chain += 1
                 if chain >= 5:
                     safe_send(chat_id, f"🍀 Цепочка из 5 фри спинов прервана.", parse_mode='HTML')
@@ -1816,7 +1783,6 @@ def cmd_slots_chat(message):
                 update_balance(user_id, 25000)
                 _slots_send_result(chat_id, 'free25', stake)
                 break
-            # выигрыш
             mult = SLOT_MULT[outcome]
             win = int(stake * mult)
             update_balance(user_id, win)
