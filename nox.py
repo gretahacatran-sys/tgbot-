@@ -114,6 +114,8 @@ EMO_CHAT = '<tg-emoji emoji-id="5235814241927181048">💬</tg-emoji>'
 EMO_VS = '<tg-emoji emoji-id="5354932922203782306">⚔️</tg-emoji>'
 EMO_CLAN = '<tg-emoji emoji-id="5285423837205260312">🎟</tg-emoji>'
 EMO_CLAN_HEADER = '<tg-emoji emoji-id="5224575413253274698">🏰</tg-emoji>'
+EMO_BOOM = '<tg-emoji emoji-id="5424972470023104089">🔥</tg-emoji>'
+EMO_HANDSHAKE = '<tg-emoji emoji-id="5370908873400020056">🤝</tg-emoji>'
 
 EMO_DIV_SOLO = '<tg-emoji emoji-id="5226554936682100372">➖</tg-emoji>'
 EMO_DIV_PVP = '<tg-emoji emoji-id="5318883801399567148">➖</tg-emoji>'
@@ -403,7 +405,7 @@ def init_db():
             'ON CONFLICT (user_id) DO NOTHING',
             (OWNER_ID, 'owner', OWNER_ID))
 
-        # ===== СИДИРОВАНИЕ ДЕФОЛТНЫХ ЭМОДЗИ/КОРОН ДЛЯ КЛАНОВ =====
+        # Сидирование дефолтных эмодзи/корон
         cursor.execute('SELECT COUNT(*) AS c FROM clan_emojis')
         if cursor.fetchone()['c'] == 0:
             default_emojis = [
@@ -437,13 +439,12 @@ def init_db():
                 cursor.execute(
                     'INSERT INTO clan_crowns (emoji_id, fallback) VALUES (%s, %s) ON CONFLICT (emoji_id) DO NOTHING',
                     (eid, fb))
-        # ===== КОНЕЦ СИДИРОВАНИЯ =====
 
         conn.commit()
         conn.close()
 
 
-# ---------- КЛАНЫ: ХЕЛПЕРЫ ----------
+# ---------- ХЕЛПЕРЫ КЛАНОВ ----------
 
 def get_user_clan(user_id, use_cache=True):
     if use_cache:
@@ -924,8 +925,8 @@ def check_banned(user_id, chat_id):
 def check_pm_game(message):
     if message.chat.type == 'private':
         safe_send(message.chat.id,
-                  "🎮 <b>Игры доступны только в чате!</b>\n\n"
-                  "Переходи в наш чат 👉 @Nox_chatik\nТам можно играть со всеми 💪",
+                  f"{EMO_SOLO_HEADER} <b>Игры доступны только в чате!</b>\n\n"
+                  f"Переходи в наш чат 👉 @Nox_chatik\nТам можно играть со всеми 💪",
                   parse_mode='HTML')
         return True
     return False
@@ -959,7 +960,7 @@ def build_balance_text(user):
     return f"{display}\n{EMO_NOX} <code>{user['balance']:,}</code> ноксов"
 
 
-# ---------- ПОДПИСКИ (с кэшем) ----------
+# ---------- ПОДПИСКИ ----------
 
 def get_required_subscriptions():
     conn = get_db_connection()
@@ -1120,7 +1121,7 @@ def handle_subscribe_check(call):
 
 
 # ==========================================================
-# ============ КЛАНЫ — ХЭНДЛЕРЫ (САМЫЕ ПЕРВЫЕ) =============
+# =========== КЛАНЫ — ХЭНДЛЕРЫ (САМЫЕ ПЕРВЫЕ) ===============
 # ==========================================================
 
 def build_clans_list_text(page=0):
@@ -2448,7 +2449,7 @@ def finalize_game(chat_id, winner_id, loser_id, stake, game_type, result, msg_id
     elif result == 'draw':
         update_balance(winner_id, stake)
         update_balance(loser_id, stake)
-        safe_send(chat_id, "🤝 Ничья!")
+        safe_send(chat_id, f"{EMO_HANDSHAKE} Ничья!")
     elif result == 'error':
         update_balance(winner_id, stake)
         update_balance(loser_id, stake)
@@ -2821,7 +2822,7 @@ def floors_take(call):
     stake = int(parts[4])
     mult = float(parts[5])
     if call.from_user.id != user_id:
-        safe_answer(call.id, "🖖 Не твоя!", show_alert=True)
+        safe_answer(call.id, "🖕 Не твоя!", show_alert=True)
         return
     wa = int(stake * mult)
     update_balance(user_id, wa)
@@ -2831,6 +2832,8 @@ def floors_take(call):
               f"{EMO_GOLDTEXT} ЗАБРАЛ!\n+{wa:,} {EMO_NOX}! (x{mult})", parse_mode='HTML')
     safe_answer(call.id, f"✅ +{wa}!")
 
+
+# ---------- РУЛЕТКА ----------
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith('рулетка'))
 def cmd_roulette_game(message):
@@ -2876,13 +2879,13 @@ def cmd_roulette_game(message):
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Принять", callback_data=f"join_roulette_{message.from_user.id}_{tid}_{stake}_{message.message_id}", style='success', icon=ICO_ACCEPT))
         markup.add(btn("Отмена", callback_data=f"cancel_invite_{message.message_id}", style='danger', icon=ICO_CANCEL))
-        safe_send(message.chat.id, f"🔫 {user_display} → {get_user_display(target)}!\nРусская рулетка\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
+        safe_send(message.chat.id, f"{EMO_ROULETTE} {user_display} → {get_user_display(target)}!\nРусская рулетка\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
         invites[message.message_id] = {'host_id': message.from_user.id, 'game_type': 'roulette', 'stake': stake, 'chat_id': message.chat.id}
     else:
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Принять", callback_data=f"join_roulette_open_{message.from_user.id}_{stake}_{message.message_id}", style='success', icon=ICO_ACCEPT))
         markup.add(btn("Отмена", callback_data=f"cancel_invite_{message.message_id}", style='danger', icon=ICO_CANCEL))
-        safe_send(message.chat.id, f"🔫 {user_display} ищет соперника!\nРусская рулетка\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
+        safe_send(message.chat.id, f"{EMO_ROULETTE} {user_display} ищет соперника!\nРусская рулетка\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
         invites[message.message_id] = {'host_id': message.from_user.id, 'game_type': 'roulette', 'stake': stake, 'chat_id': message.chat.id}
 
 
@@ -2893,7 +2896,7 @@ def start_roulette_match(chat_id, p1, p2, stake):
     p1d, p2d = get_user_display(p1), get_user_display(p2)
     gd = {'p1_id': p1['user_id'], 'p2_id': p2['user_id'], 'stake': stake, 'current_turn': ct,
           'shot_count': 0, 'finished': False, 'chat_id': chat_id}
-    msg = safe_send(chat_id, f"🔫 РУЛЕТКА!\n{p1d} {EMO_VS} {p2d}\n{EMO_NOX} {stake:,}\nХодит: {get_user_display_by_id(ct)}", parse_mode='HTML')
+    msg = safe_send(chat_id, f"{EMO_ROULETTE} РУЛЕТКА!\n{p1d} {EMO_VS} {p2d}\n{EMO_NOX} {stake:,}\nХодит: {get_user_display_by_id(ct)}", parse_mode='HTML')
     if not msg:
         return
     gmid = msg.message_id
@@ -2901,7 +2904,7 @@ def start_roulette_match(chat_id, p1, p2, stake):
     active_games[chat_id][gmid] = gd
     markup = types.InlineKeyboardMarkup()
     markup.add(btn("ВЫСТРЕЛИТЬ", callback_data=f"roulette_shoot_{gmid}_{ct}", style='danger', icon=ICO_ROULETTE))
-    safe_edit(chat_id, gmid, f"🔫 РУЛЕТКА!\n{p1d} {EMO_VS} {p2d}\n{EMO_NOX} {stake:,}\nХодит: {get_user_display_by_id(ct)}", reply_markup=markup, parse_mode='HTML')
+    safe_edit(chat_id, gmid, f"{EMO_ROULETTE} РУЛЕТКА!\n{p1d} {EMO_VS} {p2d}\n{EMO_NOX} {stake:,}\nХодит: {get_user_display_by_id(ct)}", reply_markup=markup, parse_mode='HTML')
     start_timer(chat_id, gmid, game_type='roulette', timeout=60)
 
 
@@ -2931,7 +2934,7 @@ def roulette_shoot(call):
         update_streak(lid, False, g['stake'])
         update_game_stats(wid, 'roulette', True)
         update_game_stats(lid, 'roulette', False)
-        safe_edit(cid, gmid, f"💥 БАХ! {get_user_display_by_id(lid)} проиграл!\n{EMO_CROWN} {get_user_display_by_id(wid)} +{wa - g['stake']:,} {EMO_NOX}!", parse_mode='HTML')
+        safe_edit(cid, gmid, f"{EMO_BOOM} БАХ! {get_user_display_by_id(lid)} проиграл!\n{EMO_CROWN} {get_user_display_by_id(wid)} +{wa - g['stake']:,} {EMO_NOX}!", parse_mode='HTML')
         del active_games[cid][gmid]
         remove_player_from_game(wid)
         remove_player_from_game(lid)
@@ -2942,7 +2945,7 @@ def roulette_shoot(call):
         nd = get_user_display_by_id(g['current_turn'])
         markup = types.InlineKeyboardMarkup()
         markup.add(btn("ВЫСТРЕЛИТЬ", callback_data=f"roulette_shoot_{gmid}_{g['current_turn']}", style='danger', icon=ICO_ROULETTE))
-        safe_edit(cid, gmid, f"🔫 Выстрел {g['shot_count']}\nХодит: {nd}", reply_markup=markup, parse_mode='HTML')
+        safe_edit(cid, gmid, f"{EMO_ROULETTE} Выстрел {g['shot_count']}\nХодит: {nd}", reply_markup=markup, parse_mode='HTML')
         start_timer(cid, gmid, game_type='roulette', timeout=60)
 
 
@@ -3013,6 +3016,8 @@ def join_roulette(call):
     start_roulette_match(call.message.chat.id, h, gu, stake)
 
 
+# ---------- ОРЁЛ / РЕШКА ----------
+
 @bot.message_handler(func=lambda m: m.text and m.text.strip().lower().startswith(('орел', 'орёл', 'решка')))
 def cmd_eagle_game(message):
     if check_pm_game(message):
@@ -3059,13 +3064,13 @@ def cmd_eagle_game(message):
             markup.add(
                 btn("Принять", callback_data=f"join_eg_dir:{user['user_id']}:{tid}:{stake}", style='success', icon=ICO_ACCEPT),
                 btn("Отмена", callback_data=f"cancel_eg:{user['user_id']}", style='danger', icon=ICO_CANCEL))
-            msg = safe_send(message.chat.id, f"🪙 {user_display} → {get_user_display(target)}!\nОрёл/Решка\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
+            msg = safe_send(message.chat.id, f"{EMO_EAGLE} {user_display} → {get_user_display(target)}!\nОрёл/Решка\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
         else:
             markup = types.InlineKeyboardMarkup(row_width=2)
             markup.add(
                 btn("Принять", callback_data=f"join_eg_open:{user['user_id']}:{stake}", style='success', icon=ICO_ACCEPT),
                 btn("Отмена", callback_data=f"cancel_eg:{user['user_id']}", style='danger', icon=ICO_CANCEL))
-            msg = safe_send(message.chat.id, f"🪙 {user_display} ищет соперника!\nОрёл/Решка\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
+            msg = safe_send(message.chat.id, f"{EMO_EAGLE} {user_display} ищет соперника!\nОрёл/Решка\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
         if msg:
             with invite_lock:
                 invites[msg.message_id] = {'host_id': user['user_id'], 'game_type': 'eagle', 'stake': stake, 'chat_id': message.chat.id}
@@ -3145,7 +3150,7 @@ def start_eagle_duel(call, hid, gid, stake):
         btn("Орёл", callback_data=f"egch:{game_id}:1", style='primary', icon=ICO_EAGLE),
         btn("Решка", callback_data=f"egch:{game_id}:2", style='success', icon=ICO_EAGLE))
     safe_edit(call.message.chat.id, call.message.message_id,
-              f"🪙 Орёл/Решка!\n{EMO_NOX} {stake:,}\n🎯 {cd} ВЫБИРАЕТ\n🤔 {gd} УГАДЫВАЕТ",
+              f"{EMO_EAGLE} Орёл/Решка!\n{EMO_NOX} {stake:,}\n🎯 {cd} ВЫБИРАЕТ\n🤔 {gd} УГАДЫВАЕТ",
               parse_mode='HTML', reply_markup=markup)
     if call.message.chat.id not in active_games:
         active_games[call.message.chat.id] = {}
@@ -3179,7 +3184,7 @@ def eagle_choose(call):
     markup.add(
         btn("Орёл", callback_data=f"eggs:{ggid}:1", style='primary', icon=ICO_EAGLE),
         btn("Решка", callback_data=f"eggs:{ggid}:2", style='success', icon=ICO_EAGLE))
-    safe_edit(cid, g['msg_id'], f"🪙 {cd} загадал!\n🤔 {gd} угадай!", parse_mode='HTML', reply_markup=markup)
+    safe_edit(cid, g['msg_id'], f"{EMO_EAGLE} {cd} загадал!\n🤔 {gd} угадай!", parse_mode='HTML', reply_markup=markup)
     c_id, gs_id, st, mid = g['chooser_id'], g['guesser_id'], g['stake'], g['msg_id']
     del active_games[cid][gid]
     active_games[cid][ggid] = {'game_type': 'eagle_guess', 'chooser_id': c_id, 'guesser_id': gs_id,
@@ -3218,7 +3223,7 @@ def eagle_guess(call):
     update_streak(lid, False, st)
     update_game_stats(wid, 'eagle', True)
     update_game_stats(lid, 'eagle', False)
-    safe_edit(cid, g['msg_id'], f"🪙 <b>РЕЗУЛЬТАТ:</b>\n\n{txt}\n\n{EMO_CROWN} {get_user_display_by_id(wid)} +{st:,} {EMO_NOX}!",
+    safe_edit(cid, g['msg_id'], f"{EMO_EAGLE} <b>РЕЗУЛЬТАТ:</b>\n\n{txt}\n\n{EMO_CROWN} {get_user_display_by_id(wid)} +{st:,} {EMO_NOX}!",
               parse_mode='HTML', reply_markup=None)
     remove_player_from_game(wid)
     remove_player_from_game(lid)
@@ -3270,27 +3275,27 @@ def cmd_dice_game(message):
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Принять", callback_data=f"join_dice_{message.from_user.id}_{tid}_{stake}_{message.message_id}", style='success', icon=ICO_ACCEPT))
         markup.add(btn("Отмена", callback_data=f"cancel_invite_{message.message_id}", style='danger', icon=ICO_CANCEL))
-        safe_send(message.chat.id, f"🎲 {user_display} → {get_user_display(target)}!\nКости 1на1\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
+        safe_send(message.chat.id, f"{EMO_DICE} {user_display} → {get_user_display(target)}!\nКости 1на1\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
         invites[message.message_id] = {'host_id': message.from_user.id, 'game_type': 'dice', 'stake': stake, 'chat_id': message.chat.id}
     else:
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Принять", callback_data=f"join_dice_open_{message.from_user.id}_{stake}_{message.message_id}", style='success', icon=ICO_ACCEPT))
         markup.add(btn("Отмена", callback_data=f"cancel_invite_{message.message_id}", style='danger', icon=ICO_CANCEL))
-        safe_send(message.chat.id, f"🎲 {user_display} ищет соперника!\nКости 1на1\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
+        safe_send(message.chat.id, f"{EMO_DICE} {user_display} ищет соперника!\nКости 1на1\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
         invites[message.message_id] = {'host_id': message.from_user.id, 'game_type': 'dice', 'stake': stake, 'chat_id': message.chat.id}
 
 
 def run_dice_match_thread(cid, p1, p2, stake, mid):
     try:
         p1d, p2d = get_user_display(p1), get_user_display(p2)
-        safe_send(cid, f"{p1d} бросает...", parse_mode='HTML')
+        safe_send(cid, f"{EMO_DICE} {p1d} бросает...", parse_mode='HTML')
         try:
             d1 = bot.send_dice(cid).dice.value
         except Exception:
             finalize_game(cid, p1['user_id'], p2['user_id'], stake, 'dice', 'error', mid)
             return
         time.sleep(3)
-        safe_send(cid, f"{p2d} бросает...", parse_mode='HTML')
+        safe_send(cid, f"{EMO_DICE} {p2d} бросает...", parse_mode='HTML')
         try:
             d2 = bot.send_dice(cid).dice.value
         except Exception:
@@ -3302,7 +3307,7 @@ def run_dice_match_thread(cid, p1, p2, stake, mid):
         elif d2 > d1:
             finalize_game(cid, p2['user_id'], p1['user_id'], stake, 'dice', 'win', mid)
         else:
-            safe_send(cid, f"🤝 Ничья ({d1}:{d2})! Перекидываем...")
+            safe_send(cid, f"{EMO_HANDSHAKE} Ничья ({d1}:{d2})! Перекидываем...")
             time.sleep(2)
             run_dice_match_thread(cid, p1, p2, stake, mid)
     except Exception:
@@ -3382,7 +3387,7 @@ def join_dice(call):
     run_dice_match(call.message.chat.id, h, gu, stake, mid)
 
 
-# ---------- ЦУЕФА ----------
+# ---------- ЦУЕФА (КНБ) ----------
 
 @bot.message_handler(func=lambda m: m.text and m.text.strip().lower().startswith('цуефа'))
 def cmd_rps_game(message):
@@ -3427,13 +3432,13 @@ def cmd_rps_game(message):
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Принять", callback_data=f"join_rps_{message.from_user.id}_{tid}_{stake}_{message.message_id}", style='success', icon=ICO_ACCEPT))
         markup.add(btn("Отмена", callback_data=f"cancel_invite_{message.message_id}", style='danger', icon=ICO_CANCEL))
-        safe_send(message.chat.id, f"🪨 {user_display} → {get_user_display(target)}!\nКНБ\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
+        safe_send(message.chat.id, f"{EMO_ROCK} {user_display} → {get_user_display(target)}!\nКНБ\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
         invites[message.message_id] = {'host_id': message.from_user.id, 'game_type': 'rps', 'stake': stake, 'chat_id': message.chat.id}
     else:
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Принять", callback_data=f"join_rps_open_{message.from_user.id}_{stake}_{message.message_id}", style='success', icon=ICO_ACCEPT))
         markup.add(btn("Отмена", callback_data=f"cancel_invite_{message.message_id}", style='danger', icon=ICO_CANCEL))
-        safe_send(message.chat.id, f"🪨 {user_display} ищет соперника!\nКНБ\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
+        safe_send(message.chat.id, f"{EMO_ROCK} {user_display} ищет соперника!\nКНБ\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
         invites[message.message_id] = {'host_id': message.from_user.id, 'game_type': 'rps', 'stake': stake, 'chat_id': message.chat.id}
 
 
@@ -3442,7 +3447,7 @@ def start_rps_match(cid, p1, p2, stake):
     add_player_to_game(p2['user_id'])
     p1d, p2d = get_user_display(p1), get_user_display(p2)
     markup = types.InlineKeyboardMarkup(row_width=3)
-    msg = safe_send(cid, "Ход!")
+    msg = safe_send(cid, f"{EMO_TIMER} Ход!")
     if not msg:
         return
     markup.add(btn("Камень", callback_data=f"play_rps_{msg.message_id}_🪨", style='primary', icon=ICO_ROCK))
@@ -3453,7 +3458,7 @@ def start_rps_match(cid, p1, p2, stake):
         'p1_id': p1['user_id'], 'p2_id': p2['user_id'],
         'p1_choice': None, 'p2_choice': None, 'stake': stake,
         'game_type': 'rps', 'finished': False, 'chat_id': cid, 'msg_id': msg.message_id}
-    safe_edit(cid, msg.message_id, f"{p1d} {EMO_VS} {p2d}!\n{EMO_NOX} {stake:,}\n{EMO_TIMER} 60с!", reply_markup=markup, parse_mode='HTML')
+    safe_edit(cid, msg.message_id, f"{EMO_ROCK} {p1d} {EMO_VS} {p2d}!\n{EMO_NOX} {stake:,}\n{EMO_TIMER} 60с!", reply_markup=markup, parse_mode='HTML')
     start_timer(cid, msg.message_id, game_type='rps', timeout=60)
 
 
@@ -3475,7 +3480,7 @@ def check_rps_result(cid, mid):
         markup.add(btn("Камень", callback_data=f"play_rps_{mid}_🪨", style='primary', icon=ICO_ROCK))
         markup.add(btn("Ножницы", callback_data=f"play_rps_{mid}_✂️", style='danger', icon=ICO_SCISSORS))
         markup.add(btn("Бумага", callback_data=f"play_rps_{mid}_📄", style='success', icon=ICO_PAPER))
-        safe_edit(cid, mid, f"🤝 Ничья! {cd[c1]}", reply_markup=markup, parse_mode='HTML')
+        safe_edit(cid, mid, f"{EMO_HANDSHAKE} Ничья! {cd[c1]}", reply_markup=markup, parse_mode='HTML')
         start_timer(cid, mid, game_type='rps', timeout=60)
     else:
         if rules[c1] == c2:
@@ -3493,7 +3498,7 @@ def check_rps_result(cid, mid):
             bot.delete_message(cid, mid)
         except Exception:
             pass
-        safe_send(cid, f"🏁 {p1d}: {cd[c1]}\n🏁 {p2d}: {cd[c2]}\n\n{EMO_CROWN} {get_user_display_by_id(wid)} +{wa - g['stake']:,} {EMO_NOX}!", parse_mode='HTML')
+        safe_send(cid, f"{EMO_TROPHY} {p1d}: {cd[c1]}\n{EMO_TROPHY} {p2d}: {cd[c2]}\n\n{EMO_CROWN} {get_user_display_by_id(wid)} +{wa - g['stake']:,} {EMO_NOX}!", parse_mode='HTML')
         del active_games[cid][mid]
         remove_player_from_game(wid)
         remove_player_from_game(lid)
@@ -3636,13 +3641,13 @@ def cmd_ttt_game(message):
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Принять", callback_data=f"join_ttt_{message.from_user.id}_{tid}_{stake}_{message.message_id}", style='success', icon=ICO_ACCEPT))
         markup.add(btn("Отмена", callback_data=f"cancel_invite_{message.message_id}", style='danger', icon=ICO_CANCEL))
-        safe_send(message.chat.id, f"❌ {user_display} → {get_user_display(target)}!\nКрестики-Нолики\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
+        safe_send(message.chat.id, f"{EMO_TTT_INVITE} {user_display} → {get_user_display(target)}!\nКрестики-Нолики\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
         invites[message.message_id] = {'host_id': message.from_user.id, 'game_type': 'ttt', 'stake': stake, 'chat_id': message.chat.id}
     else:
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Принять", callback_data=f"join_ttt_open_{message.from_user.id}_{stake}_{message.message_id}", style='success', icon=ICO_ACCEPT))
         markup.add(btn("Отмена", callback_data=f"cancel_invite_{message.message_id}", style='danger', icon=ICO_CANCEL))
-        safe_send(message.chat.id, f"❌ {user_display} ищет соперника!\nКрестики-Нолики\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
+        safe_send(message.chat.id, f"{EMO_TTT_INVITE} {user_display} ищет соперника!\nКрестики-Нолики\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
         invites[message.message_id] = {'host_id': message.from_user.id, 'game_type': 'ttt', 'stake': stake, 'chat_id': message.chat.id}
 
 
@@ -3661,7 +3666,7 @@ def start_ttt_match(cid, p1, p2, stake):
         first = random.choice(['X', 'O'])
         fd = p1d if first == 'X' else p2d
         extra = "(равно)"
-    msg = safe_send(cid, "🎮 Поле...")
+    msg = safe_send(cid, f"{EMO_TTT_INVITE} Поле...")
     if not msg:
         return
     active_games[cid] = active_games.get(cid, {})
@@ -3670,7 +3675,7 @@ def start_ttt_match(cid, p1, p2, stake):
         'stake': stake, 'finished': False, 'game_type': 'ttt', 'processing': False,
         'chat_id': cid, 'msg_id': msg.message_id}
     fs = EMO_TTT_X if first == 'X' else EMO_TTT_O
-    safe_edit(cid, msg.message_id, f"{p1d} {EMO_VS} {p2d}\n{EMO_NOX} {stake:,}\nХодит: {fd} {fs} {extra}",
+    safe_edit(cid, msg.message_id, f"{EMO_TTT_INVITE} {p1d} {EMO_VS} {p2d}\n{EMO_NOX} {stake:,}\nХодит: {fd} {fs} {extra}",
               reply_markup=gen_ttt_board(board, msg.message_id), parse_mode='HTML')
     start_timer(cid, msg.message_id, game_type='ttt', timeout=60)
 
@@ -3739,7 +3744,7 @@ def click_ttt(call):
         elif '⬜' not in g['board']:
             update_balance(g['p1_id'], g['stake'])
             update_balance(g['p2_id'], g['stake'])
-            safe_edit(cid, mid, "🤝 Ничья!")
+            safe_edit(cid, mid, f"{EMO_HANDSHAKE} Ничья!")
             del active_games[cid][mid]
             remove_player_from_game(g['p1_id'])
             remove_player_from_game(g['p2_id'])
@@ -3899,13 +3904,13 @@ def cmd_mines_game(message):
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Принять", callback_data=f"join_mines_{message.from_user.id}_{tid}_{stake}_{message.message_id}", style='success', icon=ICO_ACCEPT))
         markup.add(btn("Отмена", callback_data=f"cancel_invite_{message.message_id}", style='danger', icon=ICO_CANCEL))
-        safe_send(message.chat.id, f"💣 {user_display} → {get_user_display(target)}!\nМинное поле 5x5\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
+        safe_send(message.chat.id, f"{EMO_MINE} {user_display} → {get_user_display(target)}!\nМинное поле 5x5\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
         invites[message.message_id] = {'host_id': message.from_user.id, 'game_type': 'mines', 'stake': stake, 'chat_id': message.chat.id}
     else:
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Принять", callback_data=f"join_mines_open_{message.from_user.id}_{stake}_{message.message_id}", style='success', icon=ICO_ACCEPT))
         markup.add(btn("Отмена", callback_data=f"cancel_invite_{message.message_id}", style='danger', icon=ICO_CANCEL))
-        safe_send(message.chat.id, f"💣 {user_display} ищет соперника!\nМинное поле 5x5\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
+        safe_send(message.chat.id, f"{EMO_MINE} {user_display} ищет соперника!\nМинное поле 5x5\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
         invites[message.message_id] = {'host_id': message.from_user.id, 'game_type': 'mines', 'stake': stake, 'chat_id': message.chat.id}
 
 
@@ -3927,7 +3932,7 @@ def start_mines_match(cid, p1, p2, stake):
         fp = random.choice([1, 2])
         fd = p1d if fp == 1 else p2d
         extra = "(равно)"
-    msg = safe_send(cid, "💣 Минное поле 5x5", parse_mode='HTML')
+    msg = safe_send(cid, f"{EMO_MINE} Минное поле 5x5", parse_mode='HTML')
     if not msg:
         return
     active_games[cid] = active_games.get(cid, {})
@@ -3935,7 +3940,7 @@ def start_mines_match(cid, p1, p2, stake):
         'p1_id': p1['user_id'], 'p2_id': p2['user_id'], 'board': board, 'mines': mines,
         'turn': fp, 'stake': stake, 'game_type': 'mines', 'finished': False, 'processing': False,
         'chat_id': cid, 'msg_id': msg.message_id}
-    safe_edit(cid, msg.message_id, f"💣\n{p1d} {EMO_VS} {p2d}\n{EMO_NOX} {stake:,} | {fd} {extra}",
+    safe_edit(cid, msg.message_id, f"{EMO_MINE}\n{p1d} {EMO_VS} {p2d}\n{EMO_NOX} {stake:,} | {fd} {extra}",
               reply_markup=gen_mines_board(board, msg.message_id), parse_mode='HTML')
     start_timer(cid, msg.message_id, game_type='mines', timeout=60)
 
@@ -3998,7 +4003,7 @@ def click_mines(call):
             update_streak(lid, False, g['stake'])
             update_game_stats(wid, 'mines', True)
             update_game_stats(lid, 'mines', False)
-            safe_edit(cid, mid, f"💣 {get_user_display_by_id(lid)} на мине!\n{EMO_CROWN} {get_user_display_by_id(wid)} +{wa - g['stake']:,} {EMO_NOX}!",
+            safe_edit(cid, mid, f"{EMO_MINE} {get_user_display_by_id(lid)} на мине!\n{EMO_CROWN} {get_user_display_by_id(wid)} +{wa - g['stake']:,} {EMO_NOX}!",
                       reply_markup=gen_mines_final(g['mines']), parse_mode='HTML')
             del active_games[cid][mid]
             remove_player_from_game(wid)
@@ -4011,14 +4016,14 @@ def click_mines(call):
                 update_balance(g['p1_id'], g['stake'])
                 update_balance(g['p2_id'], g['stake'])
                 g['finished'] = True
-                safe_edit(cid, mid, "🤝 Ничья!", reply_markup=gen_mines_final(g['mines']), parse_mode='HTML')
+                safe_edit(cid, mid, f"{EMO_HANDSHAKE} Ничья!", reply_markup=gen_mines_final(g['mines']), parse_mode='HTML')
                 del active_games[cid][mid]
                 remove_player_from_game(g['p1_id'])
                 remove_player_from_game(g['p2_id'])
             else:
                 g['turn'] = 2 if g['turn'] == 1 else 1
                 nid = g['p1_id'] if g['turn'] == 1 else g['p2_id']
-                safe_edit(cid, mid, f"💣\n{EMO_NOX} {g['stake']:,} | {get_user_display_by_id(nid)}",
+                safe_edit(cid, mid, f"{EMO_MINE}\n{EMO_NOX} {g['stake']:,} | {get_user_display_by_id(nid)}",
                           reply_markup=gen_mines_board(g['board'], mid), parse_mode='HTML')
                 start_timer(cid, mid, game_type='mines', timeout=60)
     except Exception as e:
@@ -4174,13 +4179,13 @@ def cmd_number_game(message):
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Принять", callback_data=f"join_number_{message.from_user.id}_{tid}_{mx}_{stake}_{message.message_id}", style='success', icon=ICO_ACCEPT))
         markup.add(btn("Отмена", callback_data=f"cancel_invite_{message.message_id}", style='danger', icon=ICO_CANCEL))
-        safe_send(message.chat.id, f"🔢 {user_display} → {get_user_display(target)}!\nУгадай число 1-{mx}\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
+        safe_send(message.chat.id, f"{EMO_NUMBER} {user_display} → {get_user_display(target)}!\nУгадай число 1-{mx}\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
         invites[message.message_id] = {'host_id': message.from_user.id, 'game_type': 'number', 'stake': stake, 'chat_id': message.chat.id, 'max_num': mx}
     else:
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Принять", callback_data=f"join_number_open_{message.from_user.id}_{mx}_{stake}_{message.message_id}", style='success', icon=ICO_ACCEPT))
         markup.add(btn("Отмена", callback_data=f"cancel_invite_{message.message_id}", style='danger', icon=ICO_CANCEL))
-        safe_send(message.chat.id, f"🔢 {user_display} ищет соперника!\nУгадай число 1-{mx}\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
+        safe_send(message.chat.id, f"{EMO_NUMBER} {user_display} ищет соперника!\nУгадай число 1-{mx}\n{EMO_NOX} {stake:,}", parse_mode='HTML', reply_markup=markup)
         invites[message.message_id] = {'host_id': message.from_user.id, 'game_type': 'number', 'stake': stake, 'chat_id': message.chat.id, 'max_num': mx}
 
 
@@ -4196,7 +4201,7 @@ def start_number_match(cid, p1, p2, mx, stake):
     else:
         turn = random.choice([p1['user_id'], p2['user_id']])
         td = p1d if turn == p1['user_id'] else p2d
-    msg = safe_send(cid, f"🔢 Игра!\n{p1d} {EMO_VS} {p2d}\n1-{mx}\n{EMO_NOX} {stake:,}\nХодит: {td}", parse_mode='HTML')
+    msg = safe_send(cid, f"{EMO_NUMBER} Игра!\n{p1d} {EMO_VS} {p2d}\n1-{mx}\n{EMO_NOX} {stake:,}\nХодит: {td}", parse_mode='HTML')
     if not msg:
         return
     active_games[cid] = active_games.get(cid, {})
