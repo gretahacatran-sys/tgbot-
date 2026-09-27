@@ -54,7 +54,7 @@ SLOT_WEIGHTS = [
     ('seven', 6),
     ('new_1_2', 8),
     ('new_5', 1),
-    ('free25', 2),
+    ('free10', 2),
     ('diamond', 2),
     ('super_jackpot', 0.0001),
     ('neutral', 10),
@@ -66,8 +66,8 @@ SLOT_SYMBOLS = {
     'clover': ('6050784754494606982', '🍀'),
     'seven': ('6035165663541072563', '7️⃣'),
     'diamond': ('5967766687385129994', '💎'),
-    'super_jackpot': ('5967766687385129994', '💎'),
-    'free25': ('5285480556543373770', '🎁'),
+    'super_jackpot': ('6046225208623238566', '💎'),
+    'free10': ('5285480556543373770', '🎁'),
     'new_1_2': ('5262508344140119992', '✨'),
     'new_5': ('5355115746076672241', '⭐'),
     'fifty': ('5456173242765034256', '⚖️'),
@@ -266,7 +266,6 @@ def safe_send(chat_id, text, **kwargs):
                     pass
                 time.sleep(ra + 1)
                 continue
-            err = str(e).lower()
             if e.error_code == 400:
                 clean = strip_custom_emojis(text)
                 try:
@@ -332,7 +331,7 @@ def safe_answer(call_id, text=None, show_alert=False):
 
 
 def send_slot_result(chat_id, text):
-    """Гарантированная отправка результата слота: с premium emoji, при ошибке — без них."""
+    """Гарантированная отправка: сначала с premium emoji, при ошибке — без них."""
     result = safe_send(chat_id, text, parse_mode='HTML')
     if result is not None:
         return result
@@ -1655,8 +1654,9 @@ def _show_slots_row(symbols_list):
 
 
 def _slots_send_result(chat_id, outcome, stake):
-    """Отправляет результат слота гарантированно — через send_slot_result."""
+    """Отправляет результат слота. Все исходы обрабатываются явно, БЕЗ доступа к SLOT_MULT для невыигрышных."""
     try:
+        # ПРОИГРЫШИ
         if outcome in ('lose', 'bad_lose'):
             pool = list(SLOT_SYMBOLS.values())
             random.shuffle(pool)
@@ -1680,7 +1680,7 @@ def _slots_send_result(chat_id, outcome, stake):
         if outcome == 'minus2500':
             eid, fb = SLOT_SYMBOLS['minus2500']
             syms = [emo_tag(eid, fb)] * 4
-            text = f"[ {_show_slots_row(syms)} ]\n-{stake + 2500:,} {EMO_NOX} — а чтоб жизнь малиной не казалась"
+            text = f"[ {_show_slots_row(syms)} ]\n-{stake + 2500:,} {EMO_NOX}\nа чтоб жизнь малиной не казалась"
             send_slot_result(chat_id, text)
             return
         if outcome == 'neutral':
@@ -1689,33 +1689,47 @@ def _slots_send_result(chat_id, outcome, stake):
             text = f"[ {_show_slots_row(syms)} ]\nЗачем ты вообще родился"
             send_slot_result(chat_id, text)
             return
-        eid, fb = SLOT_SYMBOLS[outcome]
-        syms = [emo_tag(eid, fb)] * 4
-        mult = SLOT_MULT[outcome]
-        win = int(stake * mult)
-        if outcome == 'free25':
-            text = f"[ {_show_slots_row(syms)} ]\n+25 фри спинов → +25,000 {EMO_NOX}"
-        elif outcome == 'super_jackpot':
-            text = f"[ {_show_slots_row(syms)} ]\nSUPER JACKPOT x100 → +{win:,} {EMO_NOX}"
-        elif outcome == 'diamond':
-            text = f"[ {_show_slots_row(syms)} ]\nx10 → +{win:,} {EMO_NOX}"
-        elif outcome == 'seven':
-            text = f"[ {_show_slots_row(syms)} ]\nx3 → +{win:,} {EMO_NOX}"
-        elif outcome == 'strawberry':
-            text = f"[ {_show_slots_row(syms)} ]\nx2.5 → +{win:,} {EMO_NOX}"
-        elif outcome == 'cherry':
-            text = f"[ {_show_slots_row(syms)} ]\nx2 → +{win:,} {EMO_NOX}"
-        elif outcome == 'kiwi':
-            text = f"[ {_show_slots_row(syms)} ]\nx1.5 → +{win:,} {EMO_NOX}"
-        elif outcome == 'new_1_2':
-            text = f"[ {_show_slots_row(syms)} ]\nx1.2 → +{win:,} {EMO_NOX}"
-        elif outcome == 'new_5':
-            text = f"[ {_show_slots_row(syms)} ]\nx5 → +{win:,} {EMO_NOX}"
-        else:
-            text = f"[ {_show_slots_row(syms)} ]\nx{mult} → +{win:,} {EMO_NOX}"
-        send_slot_result(chat_id, text)
+        # ВЫИГРЫШИ (без множителя)
+        if outcome == 'free10':
+            eid, fb = SLOT_SYMBOLS['free10']
+            syms = [emo_tag(eid, fb)] * 4
+            text = f"[ {_show_slots_row(syms)} ]\n+10 фри спинов → +10,000 {EMO_NOX}"
+            send_slot_result(chat_id, text)
+            return
+        # ВЫИГРЫШИ С МНОЖИТЕЛЕМ
+        if outcome in SLOT_MULT and outcome in SLOT_SYMBOLS:
+            eid, fb = SLOT_SYMBOLS[outcome]
+            syms = [emo_tag(eid, fb)] * 4
+            mult = SLOT_MULT[outcome]
+            win = int(stake * mult)
+            if outcome == 'super_jackpot':
+                text = f"[ {_show_slots_row(syms)} ]\nSUPER JACKPOT x100 → +{win:,} {EMO_NOX}"
+            elif outcome == 'diamond':
+                text = f"[ {_show_slots_row(syms)} ]\nx10 → +{win:,} {EMO_NOX}"
+            elif outcome == 'seven':
+                text = f"[ {_show_slots_row(syms)} ]\nx3 → +{win:,} {EMO_NOX}"
+            elif outcome == 'strawberry':
+                text = f"[ {_show_slots_row(syms)} ]\nx2.5 → +{win:,} {EMO_NOX}"
+            elif outcome == 'cherry':
+                text = f"[ {_show_slots_row(syms)} ]\nx2 → +{win:,} {EMO_NOX}"
+            elif outcome == 'kiwi':
+                text = f"[ {_show_slots_row(syms)} ]\nx1.5 → +{win:,} {EMO_NOX}"
+            elif outcome == 'new_1_2':
+                text = f"[ {_show_slots_row(syms)} ]\nx1.2 → +{win:,} {EMO_NOX}"
+            elif outcome == 'new_5':
+                text = f"[ {_show_slots_row(syms)} ]\nx5 → +{win:,} {EMO_NOX}"
+            else:
+                text = f"[ {_show_slots_row(syms)} ]\nx{mult} → +{win:,} {EMO_NOX}"
+            send_slot_result(chat_id, text)
+            return
+        # fallback — неизвестный исход, просто уведомить
+        send_slot_result(chat_id, f"Результат: {outcome}")
     except Exception as e:
         print(f"[SLOT SEND ERR] {e}")
+        try:
+            send_slot_result(chat_id, f"Результат: {outcome}")
+        except Exception:
+            pass
 
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith('слот'))
@@ -1787,18 +1801,29 @@ def cmd_slots_chat(message):
                     send_slot_result(chat_id, f"Цепочка из 5 фри спинов прервана.")
                     break
                 continue
-            if outcome == 'free25':
-                update_balance(user_id, 25000)
-                _slots_send_result(chat_id, 'free25', stake)
+            if outcome == 'free10':
+                update_balance(user_id, 10000)
+                _slots_send_result(chat_id, 'free10', stake)
                 break
-            mult = SLOT_MULT[outcome]
-            win = int(stake * mult)
-            update_balance(user_id, win)
-            _slots_send_result(chat_id, outcome, stake)
+            # выигрыш с множителем
+            if outcome in SLOT_MULT:
+                mult = SLOT_MULT[outcome]
+                win = int(stake * mult)
+                update_balance(user_id, win)
+                _slots_send_result(chat_id, outcome, stake)
+            else:
+                # неизвестный исход — уведомить и вернуть ставку
+                print(f"[SLOTS UNKNOWN] outcome={outcome}")
+                update_balance(user_id, stake)
+                send_slot_result(chat_id, f"⚠️ Неизвестный исход: {outcome}. Ставка возвращена.")
             break
     except Exception as e:
         print(f"[SLOTS ERR] {e}")
-        update_balance(user_id, stake)
+        try:
+            update_balance(user_id, stake)
+            send_slot_result(chat_id, f"{EMO_CANCEL} Ошибка, ставка возвращена.")
+        except Exception:
+            pass
 
 
 # ---------- СУНДУК ----------
