@@ -501,10 +501,10 @@ def process_bio_bonus(message):
                     conn.close()
                 name = (message.from_user.first_name or message.from_user.username or "Пользователь")
                 safe_send(message.chat.id,
-                          f"{EMO_VIP} <b>VIP СТАТУС ПОДКЛЮЧЕН</b> {EMO_VIP}\n\n"
+                          f"{EMO_VIP} <b>VIP-СТАТУС ПОДКЛЮЧЕН!</b> {EMO_VIP}\n\n"
                           f"{EMO_SAFE} Пользователь: <b>{name}</b>\n"
                           f"{EMO_NOX} Теперь он получает <b>{BIO_BONUS_AMOUNT:,}</b> ноксов каждый день!\n"
-                          f"{EMO_VIP} У него появился VIP-значок рядом с ником {EMO_VIP}",
+                          f"{EMO_VIP} Рядом с его ником появился <b>VIP-значок</b> {EMO_VIP}",
                           parse_mode='HTML')
             elif user['bio_bonus_last_date'] != today:
                 with db_lock:
@@ -1115,7 +1115,7 @@ def build_games_list():
             f"{EMO_BULB} <i>вместо ставки <b>вб</b></i>")
 
 
-# ---------- BIO BONUS INFO (только по кнопке) ----------
+# ---------- ИНСТРУКЦИЯ VIP (кнопка в боте) ----------
 
 @bot.callback_query_handler(func=lambda call: call.data == "bio_bonus_info")
 def bio_bonus_info_cb(call):
@@ -1125,36 +1125,43 @@ def bio_bonus_info_cb(call):
         user = get_or_create_user(uid, call.from_user.username, call.from_user.first_name)
         has = user['bio_bonus_active'] == 1
         link_ok = check_user_bio_link(uid, call.from_user.username)
-        text = (f"{EMO_VIP} <b>VIP-СТАТУС • БЕСПЛАТНЫЕ 5000 НОКСОВ</b>\n"
-                f"{EMO_VIP}━━━━━━━━━━━━━━━{EMO_VIP}\n\n"
-                f"{EMO_BONUS} Получай <b>{BIO_BONUS_AMOUNT:,} {EMO_NOX}</b> каждый день и "
-                f"<b>VIP-значок</b> {EMO_VIP} рядом с ником!\n\n"
-                f"{EMO_RULES} <b>Как подключить:</b>\n"
+        text = (f"{EMO_VIP} <b>БЕСПЛАТНЫЕ 5000 НОКСОВ ЕЖЕДНЕВНО + VIP-ЗНАЧОК</b> {EMO_VIP}\n"
+                f"━━━━━━━━━━━━━━━\n\n"
+                f"{EMO_BONUS} Получай <b>{BIO_BONUS_AMOUNT:,} {EMO_NOX}</b> каждый день!\n"
+                f"{EMO_VIP} И <b>VIP-ЗНАЧОК {EMO_VIP}</b> рядом с ником!\n\n"
+                f"{EMO_RULES} <b>КАК ПОДКЛЮЧИТЬ:</b>\n"
                 f"1️⃣ Открой свой профиль Telegram\n"
                 f"2️⃣ В поле <b>«О себе»</b> (Bio) добавь одну из ссылок:\n"
                 f"   • <code>https://t.me/Nox_chatik</code>\n"
                 f"   • <code>@Nox_chatik</code>\n"
                 f"   • <code>@NoxHubBot</code>\n"
-                f"3️⃣ Можно указать в <b>@username</b>\n\n"
-                f"{EMO_SAFE} <b>Условия:</b>\n"
-                f"• Бонус начисляется раз в день в 00:00 МСК\n"
-                f"• Если ссылку убрать — VIP-статус снимется и спишется "
-                f"<b>-{BIO_BONUS_AMOUNT:,} {EMO_NOX}</b>\n"
-                f"• Нужна <b>обязательная подписка</b> на каналы/чаты\n\n")
+                f"3️⃣ Можно также указать в <b>@username</b>\n"
+                f"4️⃣ Напиши любое сообщение в @Nox_chatik — бот сам проверит и подключит!\n\n"
+                f"{EMO_SAFE} <b>ЧТО ТЫ ПОЛУЧАЕШЬ:</b>\n"
+                f"• {EMO_NOX} <b>{BIO_BONUS_AMOUNT:,} ноксов</b> каждый день в 00:00 МСК\n"
+                f"• {EMO_VIP} <b>VIP-значок</b> рядом с твоим ником\n"
+                f"• 🎁 Приоритетную поддержку и статус в чате\n\n"
+                f"{EMO_CANCEL} <b>ВАЖНО:</b>\n"
+                f"• Если уберёшь ссылку — VIP снимется, спишется <b>-{BIO_BONUS_AMOUNT:,} {EMO_NOX}</b>\n"
+                f"• Нужна <b>обязательная подписка</b> на каналы/чаты\n"
+                f"• Проверка идёт по Bio и @username\n\n")
         if has:
             rem = get_bio_bonus_remaining_seconds(user)
-            text += (f"{EMO_VIP} <b>VIP-СТАТУС АКТИВЕН</b> {EMO_VIP}\n"
-                     f"{EMO_TIMER} Следующий бонус через <b>{format_bio_bonus_time(rem)}</b>")
-            safe_answer(call.id, f"VIP • +5000 через {format_bio_bonus_time(rem)}", show_alert=True)
+            text += (f"{EMO_VIP} <b>СТАТУС: VIP АКТИВЕН</b> {EMO_VIP}\n"
+                     f"{EMO_TIMER} Следующий бонус через: <b>{format_bio_bonus_time(rem)}</b>")
+            safe_answer(call.id, f"💎 VIP • +5000 через {format_bio_bonus_time(rem)}", show_alert=True)
         elif link_ok:
-            text += f"{EMO_BULB} Ссылка найдена! Напиши что-нибудь в @Nox_chatik — активирует VIP."
-            safe_answer(call.id, "Ссылка найдена! Напиши в чатик.", show_alert=True)
+            text += (f"{EMO_BULB} <b>Ссылка найдена!</b>\n"
+                     f"Напиши что-нибудь в @Nox_chatik — бот автоматически активирует VIP-статус.")
+            safe_answer(call.id, "✅ Ссылка найдена! Напиши в чатик.", show_alert=True)
         else:
-            text += f"{EMO_CANCEL} <b>У тебя не подключено.</b>\nДобавь ссылку в Bio и напиши что-нибудь в @Nox_chatik."
-            safe_answer(call.id, "Не подключено. Добавь ссылку в Bio.", show_alert=True)
+            text += (f"{EMO_CANCEL} <b>У тебя ещё не подключено.</b>\n"
+                     f"Добавь ссылку в Bio и напиши что-нибудь в @Nox_chatik.")
+            safe_answer(call.id, "❌ Не подключено. Добавь ссылку в Bio.", show_alert=True)
         markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(btn("Наш чатик", url=CHAT_LINK, style='danger', icon=ICO_CHAT))
+        markup.add(btn("Наш чатик (написать)", url=CHAT_LINK, style='danger', icon=ICO_CHAT))
         markup.add(btn("Наш канал", url="https://t.me/NoxHubs", style='danger', icon=ICO_CHANNEL))
+        markup.add(btn("Назад", callback_data="back_to_menu", style='primary', icon=ICO_BACK))
         try:
             safe_edit(cid, call.message.message_id, text, reply_markup=markup, parse_mode='HTML')
         except Exception:
@@ -1163,6 +1170,8 @@ def bio_bonus_info_cb(call):
         print(f"[BIO INFO ERR] {e}")
         safe_answer(call.id, "❌ Ошибка", show_alert=True)
 
+
+# ---------- КОМАНДА "б" ----------
 
 @bot.message_handler(func=lambda m: m.text and m.text.strip().lower() == 'б')
 def cmd_balance_short(message):
@@ -1186,13 +1195,14 @@ def cmd_balance_short(message):
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(btn("Пополнить", url=f"https://t.me/{bu}?start=donate", style='success', icon=ICO_DONATE),
                    btn(bl, callback_data=f"quick_bonus_{user['user_id']}", style='primary', icon=bi))
+        # КРАСНАЯ КНОПКА "Бесплатные 5000 ноксов" — ВСЕГДА ВИДНА
         if user['bio_bonus_active'] == 1:
             rem = get_bio_bonus_remaining_seconds(user)
-            markup.add(btn(f"VIP 5000 через {format_bio_bonus_time(rem)}",
+            markup.add(btn(f"💎 VIP 5000 через {format_bio_bonus_time(rem)}",
                            callback_data="bio_bonus_info", style='danger', icon=ICO_VIP))
         else:
-            markup.add(btn("Бесплатные 5000 ноксов", callback_data="bio_bonus_info",
-                           style='danger', icon=ICO_VIP))
+            markup.add(btn("🎁 Бесплатные 5000 ноксов",
+                           callback_data="bio_bonus_info", style='danger', icon=ICO_VIP))
         if message.reply_to_message:
             tid = message.reply_to_message.from_user.id
             tu = get_or_create_user(tid, message.reply_to_message.from_user.username,
@@ -1226,11 +1236,11 @@ def build_balance_keyboard(user):
                btn(bl, callback_data=f"quick_bonus_{user['user_id']}", style='primary', icon=bi))
     if user['bio_bonus_active'] == 1:
         rem = get_bio_bonus_remaining_seconds(user)
-        markup.add(btn(f"VIP 5000 через {format_bio_bonus_time(rem)}",
+        markup.add(btn(f"💎 VIP 5000 через {format_bio_bonus_time(rem)}",
                        callback_data="bio_bonus_info", style='danger', icon=ICO_VIP))
     else:
-        markup.add(btn("Бесплатные 5000 ноксов", callback_data="bio_bonus_info",
-                       style='danger', icon=ICO_VIP))
+        markup.add(btn("🎁 Бесплатные 5000 ноксов",
+                       callback_data="bio_bonus_info", style='danger', icon=ICO_VIP))
     return markup
 
 
@@ -1431,11 +1441,11 @@ def cmd_bonus(message):
     markup.add(btn(bl, callback_data=f"quick_bonus_{user['user_id']}", style='success', icon=bi))
     if user['bio_bonus_active'] == 1:
         rem = get_bio_bonus_remaining_seconds(user)
-        markup.add(btn(f"{EMO_VIP} VIP 5000 через {format_bio_bonus_time(rem)}",
+        markup.add(btn(f"💎 VIP 5000 через {format_bio_bonus_time(rem)}",
                        callback_data="bio_bonus_info", style='danger', icon=ICO_VIP))
     else:
-        markup.add(btn("Бесплатные 5000 ноксов + VIP", callback_data="bio_bonus_info",
-                       style='danger', icon=ICO_VIP))
+        markup.add(btn("🎁 Бесплатные 5000 ноксов",
+                       callback_data="bio_bonus_info", style='danger', icon=ICO_VIP))
     text = (f"{EMO_BONUS} <b>БОНУСЫ</b>\n\n1️⃣ Ежедневный — 850-1200 {EMO_NOX}\n"
             f"2️⃣ Каждые 10 мин — +{QUICK_BONUS_AMOUNT} {EMO_NOX}\n"
             f"3️⃣ <b>5000 в день + VIP-значок {EMO_VIP}</b> — за ссылку в Bio\n\n{EMO_BULB} Жми кнопку!")
