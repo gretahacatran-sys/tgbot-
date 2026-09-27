@@ -48,16 +48,18 @@ BOT_ID_CACHE = {'id': None}
 
 # ============ СЛОТЫ: РАСКЛАДКА ============
 SLOT_WEIGHTS = [
-    ('lose', 50.0),
-    ('tangerine', 25.0),
-    ('strawberry', 10.0),
-    ('kiwi', 6.5),
-    ('clover', 5.0),
-    ('seven', 3.0),
-    ('diamond', 0.5),
+    ('lose', 30.0),       # x0
+    ('tangerine', 20.0),  # x0.75
+    ('kiwi', 15.0),       # x1.5 — частый
+    ('cherry', 12.0),     # x2
+    ('strawberry', 10.0), # x2.5
+    ('clover', 7.0),      # фри спин + 1000
+    ('seven', 4.0),       # x3 — реже клевера, но сильнее
+    ('diamond', 2.0),     # x10 — самый редкий
 ]
 SLOT_SYMBOLS = {
     'tangerine': ('5792092620784146419', '🍊'),
+    'cherry': ('5791951647072590102', '🍒'),
     'clover': ('5791885057899631820', '🍀'),
     'seven': ('5792024631451850893', '7️⃣'),
     'diamond': ('5791633806607782442', '💎'),
@@ -66,6 +68,7 @@ SLOT_SYMBOLS = {
 }
 SLOT_MULT = {
     'tangerine': 0.75,
+    'cherry': 2.0,
     'seven': 3.0,
     'diamond': 10.0,
     'strawberry': 2.5,
@@ -2611,12 +2614,16 @@ def _slots_send_result(chat_id, outcome, stake):
         text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
                 f"🍓 x{mult}! → +{win:,} {EMO_NOX}")
     elif outcome == 'kiwi':
-        text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
+        text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n
                 f"🥝 x{mult}! → +{win:,} {EMO_NOX}")
     else:
         text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
                 f"🔥 x{mult}! → +{win:,} {EMO_NOX}")
     safe_send(chat_id, text, parse_mode='HTML')
+        elif outcome == 'cherry':
+        text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
+                f"🍒 x{mult}! → +{win:,} {EMO_NOX}")
+    
 
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith('слот'))
