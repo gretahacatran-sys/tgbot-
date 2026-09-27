@@ -48,13 +48,13 @@ BOT_ID_CACHE = {'id': None}
 
 # ============ СЛОТЫ: РАСКЛАДКА ============
 SLOT_WEIGHTS = [
-    ('lose', 15.0),
-    ('tangerine', 35.0),
-    ('clover', 10.0),
-    ('seven', 5.0),
-    ('diamond', 0.8),
-    ('strawberry', 25.0),
-    ('kiwi', 9.2),
+    ('lose', 50.0),
+    ('tangerine', 25.0),
+    ('strawberry', 10.0),
+    ('kiwi', 6.5),
+    ('clover', 5.0),
+    ('seven', 3.0),
+    ('diamond', 0.5),
 ]
 SLOT_SYMBOLS = {
     'tangerine': ('5792092620784146419', '🍊'),
@@ -85,6 +85,12 @@ def roll_slot_outcome():
 
 def emo_tag(emoji_id, fallback):
     return f'<tg-emoji emoji-id="{emoji_id}">{fallback}</tg-emoji>'
+
+
+def strip_custom_emojis(text):
+    if not text:
+        return text
+    return re.sub(r'<tg-emoji[^>]*>(.*?)</tg-emoji>', r'\1', text, flags=re.DOTALL)
 
 
 def get_bot_id():
@@ -238,6 +244,15 @@ def safe_send(chat_id, text, **kwargs):
                     pass
                 time.sleep(retry_after + 1)
                 continue
+            err_str = str(e).lower()
+            if e.error_code == 400 and ('emoji' in err_str or 'entity' in err_str or 'parse' in err_str or 'not found' in err_str):
+                clean = strip_custom_emojis(text)
+                try:
+                    kw = dict(kwargs)
+                    kw.pop('parse_mode', None)
+                    return bot.send_message(chat_id, clean, **kw)
+                except Exception:
+                    pass
             print(f"[send ERR] {e.error_code}: {e}")
             return None
         except Exception as e:
@@ -260,7 +275,16 @@ def safe_edit(chat_id, message_id, text, **kwargs):
                     pass
                 time.sleep(retry_after + 1)
                 continue
-            elif e.error_code == 400 and ('message is not modified' in str(e) or 'no text in the message' in str(e)):
+            err_str = str(e).lower()
+            if e.error_code == 400 and ('emoji' in err_str or 'entity' in err_str or 'parse' in err_str or 'not found' in err_str):
+                clean = strip_custom_emojis(text)
+                try:
+                    kw = dict(kwargs)
+                    kw.pop('parse_mode', None)
+                    return bot.edit_message_text(clean, chat_id=chat_id, message_id=message_id, **kw)
+                except Exception:
+                    pass
+            if e.error_code == 400 and ('message is not modified' in str(e) or 'no text in the message' in str(e)):
                 try:
                     return bot.edit_message_caption(caption=text, chat_id=chat_id, message_id=message_id, **kwargs)
                 except Exception:
@@ -1211,7 +1235,7 @@ def cmd_clans(message):
             safe_send(message.chat.id, text, parse_mode='HTML', reply_markup=markup)
     except Exception as e:
         print(f"[CLANS CMD ERR] {e}")
-        safe_send(message.chat.id, f"{EMO_CANCEL} Ошибка: {e}", parse_mode='HTML')
+        safe_send(message.chat.id, f"❌ Ошибка кланов: {e}")
 
 
 def build_my_clan_text(user_id):
@@ -1248,7 +1272,7 @@ def cmd_my_clan(message):
         safe_send(message.chat.id, text, parse_mode='HTML', reply_markup=markup)
     except Exception as e:
         print(f"[MYCLAN ERR] {e}")
-        safe_send(message.chat.id, f"{EMO_CANCEL} Ошибка: {e}", parse_mode='HTML')
+        safe_send(message.chat.id, f"❌ Ошибка: {e}")
 
 
 # ---------- ГЛАВНОЕ МЕНЮ ----------
@@ -1280,7 +1304,6 @@ def welcome_new_member(message):
             if new_user.id == get_bot_id():
                 add_chat(message.chat.id, message.chat.title)
                 safe_send(message.chat.id, f"{EMO_SAFE} Бот активирован!", parse_mode='HTML')
-                # Уведомление владельцу в ЛС
                 try:
                     link = get_chat_link(message.chat.id)
                     title = message.chat.title or str(message.chat.id)
@@ -2633,7 +2656,6 @@ def cmd_slots_chat(message):
         while True:
             outcome = roll_slot_outcome()
             if outcome == 'clover':
-                # фри спин + 1000
                 update_balance(user_id, 1000)
                 eid, fb = SLOT_SYMBOLS['clover']
                 syms = [emo_tag(eid, fb)] * 4
@@ -2648,7 +2670,6 @@ def cmd_slots_chat(message):
                     safe_send(chat_id, f"🍀 Цепочка из 5 фри спинов прервана.", parse_mode='HTML')
                     break
                 continue
-            # не клевер — финал
             if outcome == 'lose':
                 _slots_send_result(chat_id, 'lose', stake)
             else:
@@ -5233,14 +5254,11 @@ def adm_subscription_management(call):
             ns = 0 if row['sub_required'] else 1
             title = row['chat_title'] or row['chat_id']
             link = get_chat_link(row['chat_id'])
-            # Кнопка-ссылка на сам чат
             if link:
                 markup.add(btn(f"🔗 {title}", url=link, style='primary', icon=ICO_CHAT))
             else:
                 text += f"• {title} (без ссылки)\n"
-            # Кнопка переключения подписки
             markup.add(btn(f"{st} Подписка: {title}", callback_data=f"toggle_subreq_{row['chat_id']}_{ns}", style='primary', icon=ICO_CHAT))
-            # Удаление
             markup.add(btn(f"🗑 Удалить {title}", callback_data=f"del_chat_{row['chat_id']}", style='danger', icon=ICO_CANCEL))
     else:
         text += "Нет.\n"
