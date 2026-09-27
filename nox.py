@@ -1,4 +1,4 @@
-# nox.py — NoxHub bot (PostgreSQL / Aiven / Render ready)
+# nox.py — NoxHub bot
 import telebot
 from telebot import types
 import psycopg2
@@ -33,6 +33,7 @@ PROMOS_PER_PAGE = 3
 CARD_NUMBER = '2200702140962171'
 CHANNEL_LINK = 'https://t.me/NoxHubs'
 temp_donate = {}
+temp_co_owner = {}
 QUICK_BONUS_INTERVAL = 10 * 60
 QUICK_BONUS_AMOUNT = 500
 
@@ -41,11 +42,11 @@ SUB_CACHE_TTL = 30
 BOT_ID_CACHE = {'id': None}
 
 SLOT_WEIGHTS = [
-    ('lose', 26),
+    ('lose', 27),
     ('bad_lose', 30),
     ('fifty', 35),
     ('devstv', 6),
-    ('minus2500', 3),
+    ('minus2500', 1),
     ('kiwi', 32),
     ('cherry', 28),
     ('strawberry', 20),
@@ -59,13 +60,13 @@ SLOT_WEIGHTS = [
     ('neutral', 10),
 ]
 SLOT_SYMBOLS = {
-    'kiwi': ('5791848593627289156', '🥝'),
+    'kiwi': ('5215458128463682363', '🥝'),
     'cherry': ('5791951647072590102', '🍒'),
     'strawberry': ('5794330032457389446', '🍓'),
     'clover': ('6050784754494606982', '🍀'),
     'seven': ('6035165663541072563', '7️⃣'),
-    'diamond': ('5791633806607782442', '💎'),
-    'super_jackpot': ('6046225208623238566', '💎'),
+    'diamond': ('5967766687385129994', '💎'),
+    'super_jackpot': ('5967766687385129994', '💎'),
     'free25': ('5285480556543373770', '🎁'),
     'new_1_2': ('5262508344140119992', '✨'),
     'new_5': ('5355115746076672241', '⭐'),
@@ -168,9 +169,8 @@ EMO_MODS = '<tg-emoji emoji-id="5985532304208957021">🛡️</tg-emoji>'
 EMO_SLOTS = '<tg-emoji emoji-id="5384509325429463744">🎰</tg-emoji>'
 EMO_SURRENDER = '<tg-emoji emoji-id="5411534277563150683">🏳️</tg-emoji>'
 EMO_CHERRY = '<tg-emoji emoji-id="5791951647072590102">🍒</tg-emoji>'
-EMO_ORANGE = '<tg-emoji emoji-id="5456173242765034256">⚖️</tg-emoji>'
-EMO_DIAMOND = '<tg-emoji emoji-id="5791633806607782442">💎</tg-emoji>'
-EMO_LEMON = '<tg-emoji emoji-id="5791734858598323525">🍋</tg-emoji>'
+EMO_DIAMOND = '<tg-emoji emoji-id="5967766687385129994">💎</tg-emoji>'
+EMO_KIWI = '<tg-emoji emoji-id="5215458128463682363">🥝</tg-emoji>'
 EMO_NUMBER = '<tg-emoji emoji-id="6323436631428695574">🔢</tg-emoji>'
 EMO_DOWN = '<tg-emoji emoji-id="6010464967319359998">👇</tg-emoji>'
 EMO_BULB = '<tg-emoji emoji-id="5422439311196834318">💡</tg-emoji>'
@@ -231,6 +231,7 @@ ICO_SOLO_HEADER = '6001198270435563383'
 ICO_DICE = '5280816565657300091'
 ICO_NUMBER = '6323436631428695574'
 ICO_VS = '5354932922203782306'
+ICO_DIAMOND = '5967766687385129994'
 
 
 def btn(text, callback_data=None, url=None, style=None, icon=None):
@@ -257,16 +258,16 @@ def safe_send(chat_id, text, **kwargs):
             return bot.send_message(chat_id, text, **kwargs)
         except telebot.apihelper.ApiTelegramException as e:
             if e.error_code == 429:
-                retry_after = 3
+                ra = 3
                 try:
                     if hasattr(e, 'result_json') and e.result_json:
-                        retry_after = e.result_json.get('parameters', {}).get('retry_after', 3)
+                        ra = e.result_json.get('parameters', {}).get('retry_after', 3)
                 except Exception:
                     pass
-                time.sleep(retry_after + 1)
+                time.sleep(ra + 1)
                 continue
-            err_str = str(e).lower()
-            if e.error_code == 400 and ('emoji' in err_str or 'entity' in err_str or 'parse' in err_str or 'not found' in err_str):
+            err = str(e).lower()
+            if e.error_code == 400 and ('emoji' in err or 'entity' in err or 'parse' in err or 'not found' in err):
                 clean = strip_custom_emojis(text)
                 try:
                     kw = dict(kwargs)
@@ -288,16 +289,16 @@ def safe_edit(chat_id, message_id, text, **kwargs):
             return bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, **kwargs)
         except telebot.apihelper.ApiTelegramException as e:
             if e.error_code == 429:
-                retry_after = 3
+                ra = 3
                 try:
                     if hasattr(e, 'result_json') and e.result_json:
-                        retry_after = e.result_json.get('parameters', {}).get('retry_after', 3)
+                        ra = e.result_json.get('parameters', {}).get('retry_after', 3)
                 except Exception:
                     pass
-                time.sleep(retry_after + 1)
+                time.sleep(ra + 1)
                 continue
-            err_str = str(e).lower()
-            if e.error_code == 400 and ('emoji' in err_str or 'entity' in err_str or 'parse' in err_str or 'not found' in err_str):
+            err = str(e).lower()
+            if e.error_code == 400 and ('emoji' in err or 'entity' in err or 'parse' in err or 'not found' in err):
                 clean = strip_custom_emojis(text)
                 try:
                     kw = dict(kwargs)
@@ -305,7 +306,7 @@ def safe_edit(chat_id, message_id, text, **kwargs):
                     return bot.edit_message_text(clean, chat_id=chat_id, message_id=message_id, **kw)
                 except Exception:
                     pass
-            if e.error_code == 400 and ('message is not modified' in str(e) or 'no text in the message' in str(e)):
+            if e.error_code == 400 and ('not modified' in str(e) or 'no text' in str(e)):
                 try:
                     return bot.edit_message_caption(caption=text, chat_id=chat_id, message_id=message_id, **kwargs)
                 except Exception:
@@ -331,7 +332,7 @@ def safe_answer(call_id, text=None, show_alert=False):
         pass
 
 
-# ================== ПУЛ СОЕДИНЕНИЙ ==================
+# ================== ПУЛ ==================
 _db_pool = None
 _pool_lock = threading.Lock()
 
@@ -379,10 +380,8 @@ def db_cursor(conn):
 
 
 def column_exists(cursor, table, column):
-    cursor.execute("""
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = %s AND column_name = %s
-    """, (table, column))
+    cursor.execute("""SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = %s AND column_name = %s""", (table, column))
     return cursor.fetchone() is not None
 
 
@@ -390,7 +389,6 @@ def init_db():
     with db_lock:
         conn = get_db_connection()
         cursor = db_cursor(conn)
-
         cursor.execute('''CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT PRIMARY KEY,
             username TEXT,
@@ -403,7 +401,6 @@ def init_db():
             last_bonus_date TEXT DEFAULT NULL,
             last_quick_bonus TEXT DEFAULT NULL
         )''')
-
         for col, ddl in [
             ('banned', 'ALTER TABLE users ADD COLUMN banned INTEGER DEFAULT 0'),
             ('last_bonus_date', 'ALTER TABLE users ADD COLUMN last_bonus_date TEXT DEFAULT NULL'),
@@ -411,88 +408,125 @@ def init_db():
         ]:
             if not column_exists(cursor, 'users', col):
                 cursor.execute(ddl)
-
         cursor.execute('''CREATE TABLE IF NOT EXISTS game_stats (
             user_id BIGINT, game_type TEXT,
             wins INTEGER DEFAULT 0, losses INTEGER DEFAULT 0,
             PRIMARY KEY (user_id, game_type)
         )''')
-
         cursor.execute('''CREATE TABLE IF NOT EXISTS promos (
             code TEXT PRIMARY KEY, reward BIGINT,
             max_uses INTEGER, current_uses INTEGER DEFAULT 0
         )''')
-
         cursor.execute('''CREATE TABLE IF NOT EXISTS promo_history (
             code TEXT, user_id BIGINT,
             activated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (code, user_id)
         )''')
-
         cursor.execute('''CREATE TABLE IF NOT EXISTS chats (
             chat_id BIGINT PRIMARY KEY, chat_title TEXT, sub_required INTEGER DEFAULT 0
         )''')
-
         cursor.execute('''CREATE TABLE IF NOT EXISTS required_subscriptions (
             id SERIAL PRIMARY KEY, chat_id BIGINT UNIQUE,
             type TEXT, link TEXT, title TEXT
         )''')
-
         cursor.execute('''CREATE TABLE IF NOT EXISTS user_subscriptions (
             user_id BIGINT, chat_id BIGINT, confirmed INTEGER DEFAULT 0,
             PRIMARY KEY (user_id, chat_id)
         )''')
-
         cursor.execute('''CREATE TABLE IF NOT EXISTS moderators (
             user_id BIGINT PRIMARY KEY, role TEXT DEFAULT 'moderator',
             added_by BIGINT, added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
-
-        cursor.execute(
-            'INSERT INTO moderators (user_id, role, added_by) VALUES (%s, %s, %s) '
-            'ON CONFLICT (user_id) DO NOTHING',
-            (OWNER_ID, 'owner', OWNER_ID))
-
+        cursor.execute('''CREATE TABLE IF NOT EXISTS co_owners (
+            user_id BIGINT PRIMARY KEY, added_by BIGINT,
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        cursor.execute('INSERT INTO moderators (user_id, role, added_by) VALUES (%s, %s, %s) ON CONFLICT (user_id) DO NOTHING',
+                       (OWNER_ID, 'owner', OWNER_ID))
         conn.commit()
         conn.close()
+
+
+# ---------- CO OWNERS ----------
+
+def is_co_owner(user_id):
+    if user_id == OWNER_ID:
+        return True
+    try:
+        conn = get_db_connection()
+        cursor = db_cursor(conn)
+        cursor.execute('SELECT 1 FROM co_owners WHERE user_id = %s', (user_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return row is not None
+    except Exception:
+        return user_id == OWNER_ID
+
+
+def add_co_owner(user_id, added_by):
+    with db_lock:
+        conn = get_db_connection()
+        cursor = db_cursor(conn)
+        cursor.execute('INSERT INTO co_owners (user_id, added_by) VALUES (%s, %s) ON CONFLICT (user_id) DO NOTHING',
+                       (user_id, added_by))
+        conn.commit()
+        conn.close()
+
+
+def remove_co_owner(user_id):
+    with db_lock:
+        conn = get_db_connection()
+        cursor = db_cursor(conn)
+        cursor.execute('DELETE FROM co_owners WHERE user_id = %s', (user_id,))
+        conn.commit()
+        conn.close()
+
+
+def get_co_owners():
+    conn = get_db_connection()
+    cursor = db_cursor(conn)
+    cursor.execute('SELECT user_id FROM co_owners ORDER BY added_at')
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 # ---------- ОБЩИЕ ----------
 
 def get_user_display(user):
     try:
-        user_id = None
+        uid = None
         name = None
         if hasattr(user, 'id') and hasattr(user, 'first_name'):
-            user_id = user.id
+            uid = user.id
             name = (getattr(user, 'first_name', '') or '').strip() or (getattr(user, 'username', '') or '').strip()
         elif hasattr(user, 'get') and callable(getattr(user, 'get')):
-            user_id = user.get('user_id')
+            uid = user.get('user_id')
             name = (user.get('first_name') or '').strip() or (user.get('username') or '').strip()
         else:
             try:
-                user_id = user['user_id']
+                uid = user['user_id']
             except Exception:
-                user_id = None
+                uid = None
             try:
                 fn = user['first_name'] or ''
                 un = user['username'] or ''
                 name = fn.strip() or un.strip()
             except Exception:
                 name = None
-        if not user_id:
+        if not uid:
             return "Пользователь"
         if not name:
             conn = get_db_connection()
             cursor = db_cursor(conn)
-            cursor.execute('SELECT first_name, username FROM users WHERE user_id = %s', (user_id,))
+            cursor.execute('SELECT first_name, username FROM users WHERE user_id = %s', (uid,))
             row = cursor.fetchone()
             conn.close()
             if row:
                 name = (row['first_name'] or '').strip() or (row['username'] or '').strip()
         if not name:
-            name = f"id{user_id}"
-        return f'<a href="tg://user?id={user_id}">{name}</a>'
+            name = f"id{uid}"
+        return f'<a href="tg://user?id={uid}">{name}</a>'
     except Exception:
         return "Пользователь"
 
@@ -519,8 +553,8 @@ def get_or_create_user(user_id, username, first_name):
             user = cursor.fetchone()
         else:
             if username or first_name:
-                cursor.execute('UPDATE users SET username = COALESCE(NULLIF(%s, \'\'), username), '
-                               'first_name = COALESCE(NULLIF(%s, \'\'), first_name) WHERE user_id = %s',
+                cursor.execute("UPDATE users SET username = COALESCE(NULLIF(%s, ''), username), "
+                               "first_name = COALESCE(NULLIF(%s, ''), first_name) WHERE user_id = %s",
                                (username, first_name, user_id))
             for game in ['dice', 'rps', 'ttt', 'mines', 'number']:
                 cursor.execute('''INSERT INTO game_stats (user_id, game_type, wins, losses)
@@ -619,15 +653,15 @@ def get_all_stats(user_id):
         'number': f'{EMO_NUMBER} Угадай число'
     }
     for row in rows:
-        game = row['game_type']
-        if game in names:
-            wins, losses = row['wins'], row['losses']
-            total = wins + losses
-            winrate = 0.0 if total == 0 else round(((wins - losses) / total) * 100, 1)
-            stats[game] = {'name': names[game], 'wins': wins, 'losses': losses, 'winrate': winrate}
-    for game in ['dice', 'rps', 'ttt', 'mines', 'number']:
-        if game not in stats:
-            stats[game] = {'name': names[game], 'wins': 0, 'losses': 0, 'winrate': 0.0}
+        g = row['game_type']
+        if g in names:
+            w, l = row['wins'], row['losses']
+            t = w + l
+            wr = 0.0 if t == 0 else round(((w - l) / t) * 100, 1)
+            stats[g] = {'name': names[g], 'wins': w, 'losses': l, 'winrate': wr}
+    for g in ['dice', 'rps', 'ttt', 'mines', 'number']:
+        if g not in stats:
+            stats[g] = {'name': names[g], 'wins': 0, 'losses': 0, 'winrate': 0.0}
     return stats
 
 
@@ -640,16 +674,16 @@ def update_streak(user_id, is_win, stake=0):
         if not res:
             conn.close()
             return
-        current, maximum = res['current_streak'], res['max_streak']
+        cur, mx = res['current_streak'], res['max_streak']
         if is_win:
             if stake >= 1000:
-                current += 1
-                if current > maximum:
-                    maximum = current
+                cur += 1
+                if cur > mx:
+                    mx = cur
         else:
-            current = 0
+            cur = 0
         cursor.execute('UPDATE users SET current_streak = %s, max_streak = %s WHERE user_id = %s',
-                       (current, maximum, user_id))
+                       (cur, mx, user_id))
         conn.commit()
         conn.close()
 
@@ -685,8 +719,7 @@ def get_quick_bonus_remaining(user):
     except Exception:
         return 0
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
-    elapsed = (now - last).total_seconds()
-    return max(0, int(QUICK_BONUS_INTERVAL - elapsed))
+    return max(0, int(QUICK_BONUS_INTERVAL - (now - last).total_seconds()))
 
 
 def format_time(seconds):
@@ -782,13 +815,11 @@ def check_required_subscriptions(user_id, chat_id, message_id=None, sender_chat=
     bid = get_bot_id()
     if bid is not None and user_id == bid:
         return True
-
     key = (user_id, chat_id)
     now = time.time()
     cached = sub_check_cache.get(key)
     if cached and cached[0] > now:
         return cached[1]
-
     try:
         conn = get_db_connection()
         cursor = db_cursor(conn)
@@ -800,17 +831,14 @@ def check_required_subscriptions(user_id, chat_id, message_id=None, sender_chat=
             return True
     except Exception:
         return True
-
     subs = get_required_subscriptions()
     if not subs:
         sub_check_cache[key] = (now + SUB_CACHE_TTL, True)
         return True
-
     not_confirmed = []
     for sub in subs:
         if not is_user_subscribed_to_channel(user_id, sub['chat_id']):
             not_confirmed.append(sub)
-
     if not_confirmed:
         unsub_attempts[key] = unsub_attempts.get(key, 0) + 1
         attempts = unsub_attempts[key]
@@ -889,7 +917,7 @@ def get_main_menu(user):
         btn("Чатик", url="https://t.me/Nox_chatik", style='danger', icon=ICO_CHAT)
     )
     markup.add(btn("Поддержка", url=f"t.me/{OWNER_USERNAME}", style='danger', icon=ICO_SUPPORT))
-    if user['user_id'] == OWNER_ID:
+    if is_co_owner(user['user_id']):
         markup.add(btn("Админ-панель", callback_data="admin_panel", style='danger', icon=ICO_ADMIN))
     return markup
 
@@ -1023,14 +1051,12 @@ def cmd_balance_short(message):
         today = get_moscow_date()
         daily_taken = user['last_bonus_date'] == today
         quick_remaining = get_quick_bonus_remaining(user)
-
         if not daily_taken:
             bonus_label, bonus_icon = "Бонус", ICO_BONUS_ICO
         elif quick_remaining == 0:
             bonus_label, bonus_icon = f"+{QUICK_BONUS_AMOUNT} ноксов", ICO_GOLD_BTN
         else:
             bonus_label, bonus_icon = f"Бонус {format_time(quick_remaining)}", ICO_BONUS_ICO
-
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(
             btn("Пополнить", url=f"https://t.me/{bot_username}?start=donate", style='success', icon=ICO_DONATE),
@@ -1085,7 +1111,6 @@ def quick_bonus_handler(call):
                 return
         user = get_or_create_user(user_id, call.from_user.username, call.from_user.first_name)
         state = build_bonus_state(user)
-
         if state == 0:
             bonus = random.randint(850, 1200)
             jackpot = random.random() * 10000 < 1
@@ -1526,14 +1551,6 @@ def show_games_callback(call):
 user_decks = {}
 
 
-def get_next_result(user_id):
-    if user_id not in user_decks or not user_decks[user_id]:
-        deck = ['lose'] * 5000 + ['fruit'] * 4920 + ['diamond'] * 80
-        random.shuffle(deck)
-        user_decks[user_id] = deck
-    return user_decks[user_id].pop()
-
-
 def is_player_in_active_game(user_id):
     for chat_games in list(active_games.values()):
         for g in list(chat_games.values()):
@@ -1632,63 +1649,66 @@ def _show_slots_row(symbols_list):
 
 
 def _slots_send_result(chat_id, outcome, stake):
-    if outcome in ('lose', 'bad_lose'):
-        pool = list(SLOT_SYMBOLS.values())
-        random.shuffle(pool)
-        syms = [emo_tag(eid, fb) for eid, fb in pool[:4]]
-        text = f"[ {_show_slots_row(syms)} ]\n{EMO_CANCEL} Проигрыш. -{stake:,} {EMO_NOX}"
-        safe_send(chat_id, text, parse_mode='HTML')
-        return
-    if outcome == 'fifty':
-        eid, fb = SLOT_SYMBOLS['fifty']
+    try:
+        if outcome in ('lose', 'bad_lose'):
+            pool = list(SLOT_SYMBOLS.values())
+            random.shuffle(pool)
+            syms = [emo_tag(eid, fb) for eid, fb in pool[:4]]
+            text = f"[ {_show_slots_row(syms)} ]\nПроигрыш. -{stake:,} {EMO_NOX}"
+            safe_send(chat_id, text, parse_mode='HTML')
+            return
+        if outcome == 'fifty':
+            eid, fb = SLOT_SYMBOLS['fifty']
+            syms = [emo_tag(eid, fb)] * 4
+            win = int(stake * 0.5)
+            text = f"[ {_show_slots_row(syms)} ]\nВозврат 50% → +{win:,} {EMO_NOX}"
+            safe_send(chat_id, text, parse_mode='HTML')
+            return
+        if outcome == 'devstv':
+            eid, fb = SLOT_SYMBOLS['devstv']
+            syms = [emo_tag(eid, fb)] * 4
+            text = f"[ {_show_slots_row(syms)} ]\nТы умрёшь девственником"
+            safe_send(chat_id, text, parse_mode='HTML')
+            return
+        if outcome == 'minus2500':
+            eid, fb = SLOT_SYMBOLS['minus2500']
+            syms = [emo_tag(eid, fb)] * 4
+            text = f"[ {_show_slots_row(syms)} ]\nСтавка сгорела! -{stake:,} {EMO_NOX}"
+            safe_send(chat_id, text, parse_mode='HTML')
+            return
+        if outcome == 'neutral':
+            eid, fb = SLOT_SYMBOLS['neutral']
+            syms = [emo_tag(eid, fb)] * 4
+            text = f"[ {_show_slots_row(syms)} ]\nЗачем ты вообще родился"
+            safe_send(chat_id, text, parse_mode='HTML')
+            return
+        eid, fb = SLOT_SYMBOLS[outcome]
         syms = [emo_tag(eid, fb)] * 4
-        win = int(stake * 0.5)
-        text = f"[ {_show_slots_row(syms)} ]\n{EMO_HANDSHAKE} Возврат 50% → +{win:,} {EMO_NOX}"
+        mult = SLOT_MULT[outcome]
+        win = int(stake * mult)
+        if outcome == 'free25':
+            text = f"[ {_show_slots_row(syms)} ]\n+25 фри спинов → +25,000 {EMO_NOX}"
+        elif outcome == 'super_jackpot':
+            text = f"[ {_show_slots_row(syms)} ]\nSUPER JACKPOT x100 → +{win:,} {EMO_NOX}"
+        elif outcome == 'diamond':
+            text = f"[ {_show_slots_row(syms)} ]\nx10 → +{win:,} {EMO_NOX}"
+        elif outcome == 'seven':
+            text = f"[ {_show_slots_row(syms)} ]\nx3 → +{win:,} {EMO_NOX}"
+        elif outcome == 'strawberry':
+            text = f"[ {_show_slots_row(syms)} ]\nx2.5 → +{win:,} {EMO_NOX}"
+        elif outcome == 'cherry':
+            text = f"[ {_show_slots_row(syms)} ]\nx2 → +{win:,} {EMO_NOX}"
+        elif outcome == 'kiwi':
+            text = f"[ {_show_slots_row(syms)} ]\nx1.5 → +{win:,} {EMO_NOX}"
+        elif outcome == 'new_1_2':
+            text = f"[ {_show_slots_row(syms)} ]\nx1.2 → +{win:,} {EMO_NOX}"
+        elif outcome == 'new_5':
+            text = f"[ {_show_slots_row(syms)} ]\nx5 → +{win:,} {EMO_NOX}"
+        else:
+            text = f"[ {_show_slots_row(syms)} ]\nx{mult} → +{win:,} {EMO_NOX}"
         safe_send(chat_id, text, parse_mode='HTML')
-        return
-    if outcome == 'devstv':
-        eid, fb = SLOT_SYMBOLS['devstv']
-        syms = [emo_tag(eid, fb)] * 4
-        text = f"[ {_show_slots_row(syms)} ]\n{EMO_SKULL} Ты умрёшь девственником"
-        safe_send(chat_id, text, parse_mode='HTML')
-        return
-    if outcome == 'minus2500':
-        eid, fb = SLOT_SYMBOLS['minus2500']
-        syms = [emo_tag(eid, fb)] * 4
-        text = f"[ {_show_slots_row(syms)} ]\n{EMO_SKULL} -{stake + 2500:,} {EMO_NOX}! (ставка + 2500)"
-        safe_send(chat_id, text, parse_mode='HTML')
-        return
-    if outcome == 'neutral':
-        eid, fb = SLOT_SYMBOLS['neutral']
-        syms = [emo_tag(eid, fb)] * 4
-        text = f"[ {_show_slots_row(syms)} ]\nЗачем ты вообще родился"
-        safe_send(chat_id, text, parse_mode='HTML')
-        return
-    eid, fb = SLOT_SYMBOLS[outcome]
-    syms = [emo_tag(eid, fb)] * 4
-    mult = SLOT_MULT[outcome]
-    win = int(stake * mult)
-    if outcome == 'free25':
-        text = f"[ {_show_slots_row(syms)} ]\n{EMO_BONUS} +25 фри спинов → +25,000 {EMO_NOX}"
-    elif outcome == 'super_jackpot':
-        text = f"[ {_show_slots_row(syms)} ]\n{EMO_DIAMOND} SUPER JACKPOT x100 → +{win:,} {EMO_NOX}"
-    elif outcome == 'diamond':
-        text = f"[ {_show_slots_row(syms)} ]\n{EMO_DIAMOND} x10 → +{win:,} {EMO_NOX}"
-    elif outcome == 'seven':
-        text = f"[ {_show_slots_row(syms)} ]\n7️⃣ x3 → +{win:,} {EMO_NOX}"
-    elif outcome == 'strawberry':
-        text = f"[ {_show_slots_row(syms)} ]\n🍓 x2.5 → +{win:,} {EMO_NOX}"
-    elif outcome == 'cherry':
-        text = f"[ {_show_slots_row(syms)} ]\n{EMO_CHERRY} x2 → +{win:,} {EMO_NOX}"
-    elif outcome == 'kiwi':
-        text = f"[ {_show_slots_row(syms)} ]\n🥝 x1.5 → +{win:,} {EMO_NOX}"
-    elif outcome == 'new_1_2':
-        text = f"[ {_show_slots_row(syms)} ]\n✨ x1.2 → +{win:,} {EMO_NOX}"
-    elif outcome == 'new_5':
-        text = f"[ {_show_slots_row(syms)} ]\n{EMO_STARS} x5 → +{win:,} {EMO_NOX}"
-    else:
-        text = f"[ {_show_slots_row(syms)} ]\n{EMO_FIRE} x{mult} → +{win:,} {EMO_NOX}"
-    safe_send(chat_id, text, parse_mode='HTML')
+    except Exception as e:
+        print(f"[SLOT SEND ERR] {e}")
 
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith('слот'))
@@ -1697,7 +1717,6 @@ def cmd_slots_chat(message):
         return
     user_id = message.from_user.id
     chat_id = message.chat.id
-
     if casino_in_progress.get(user_id, False):
         markup = types.InlineKeyboardMarkup()
         markup.add(btn("Сбросить", callback_data="reset_solo_games", style='primary'))
@@ -1729,7 +1748,6 @@ def cmd_slots_chat(message):
         chain = 0
         while True:
             outcome = roll_slot_outcome(balance_after)
-
             if outcome in ('lose', 'bad_lose'):
                 _slots_send_result(chat_id, 'lose', stake)
                 break
@@ -1742,7 +1760,7 @@ def cmd_slots_chat(message):
                 _slots_send_result(chat_id, 'devstv', stake)
                 break
             if outcome == 'minus2500':
-                update_balance(user_id, -2500)
+                # ставка уже списана, просто больше ничего не снимаем
                 _slots_send_result(chat_id, 'minus2500', stake)
                 break
             if outcome == 'neutral':
@@ -1755,12 +1773,12 @@ def cmd_slots_chat(message):
                 syms = [emo_tag(eid, fb)] * 4
                 safe_send(chat_id,
                           f"[ {_show_slots_row(syms)} ]\n"
-                          f"🍀 ФРИ СПИН! +1,000 {EMO_NOX}\n"
-                          f"🔄 Крутим ещё (без списания)...",
+                          f"ФРИ СПИН! +1,000 {EMO_NOX}\n"
+                          f"Крутим ещё (без списания)...",
                           parse_mode='HTML')
                 chain += 1
                 if chain >= 5:
-                    safe_send(chat_id, f"🍀 Цепочка из 5 фри спинов прервана.", parse_mode='HTML')
+                    safe_send(chat_id, f"Цепочка из 5 фри спинов прервана.", parse_mode='HTML')
                     break
                 continue
             if outcome == 'free25':
@@ -2619,7 +2637,7 @@ def join_dice(call):
     run_dice_match(call.message.chat.id, h, gu, stake, mid)
 
 
-# ---------- ЦУЕФА (КНБ) ----------
+# ---------- КНБ ----------
 
 @bot.message_handler(func=lambda m: m.text and m.text.strip().lower().startswith('цуефа'))
 def cmd_rps_game(message):
@@ -2914,7 +2932,7 @@ def start_ttt_match(cid, p1, p2, stake):
 
 def gen_ttt_board(board, mid):
     markup = types.InlineKeyboardMarkup(row_width=3)
-    symbols = {0:'1️⃣',1:'2️⃣',2:'3️⃣',3:'4️⃣',4:'5️⃣',5:'6️⃣',6:'7️⃣',7:'8️⃣',8:'9️⃣'}
+    symbols = {0: '1️⃣', 1: '2️⃣', 2: '3️⃣', 3: '4️⃣', 4: '5️⃣', 5: '6️⃣', 6: '7️⃣', 7: '8️⃣', 8: '9️⃣'}
     btns = []
     for i, cell in enumerate(board):
         if cell == '❌':
@@ -3755,7 +3773,7 @@ def get_target_user(message):
 
 @bot.message_handler(func=lambda m: m.text and m.text.strip().lower() == 'бан')
 def cmd_ban_user(message):
-    if message.from_user.id != OWNER_ID:
+    if not is_co_owner(message.from_user.id):
         return
     _, tid = get_target_user(message)
     if not tid:
@@ -3775,7 +3793,7 @@ def cmd_ban_user(message):
 
 @bot.message_handler(func=lambda m: m.text and m.text.strip().lower() == 'разбан')
 def cmd_unban_user(message):
-    if message.from_user.id != OWNER_ID:
+    if not is_co_owner(message.from_user.id):
         return
     _, tid = get_target_user(message)
     if not tid:
@@ -3791,8 +3809,8 @@ def cmd_unban_user(message):
 
 @bot.message_handler(func=lambda m: m.text and m.text.strip().lower() == 'кик')
 def cmd_kick_user(message):
-    if message.from_user.id != OWNER_ID:
-        safe_send(message.chat.id, f"{EMO_CANCEL} Только владелец!", parse_mode='HTML')
+    if not is_co_owner(message.from_user.id):
+        safe_send(message.chat.id, f"{EMO_CANCEL} Нет прав!", parse_mode='HTML')
         return
     if message.chat.type not in ['group', 'supergroup']:
         safe_send(message.chat.id, f"{EMO_CANCEL} Только в группах!", parse_mode='HTML')
@@ -3811,8 +3829,8 @@ def cmd_kick_user(message):
 
 @bot.message_handler(func=lambda m: m.text and m.text.strip().lower().startswith('пополнить'))
 def cmd_owner_add_balance(message):
-    if message.from_user.id != OWNER_ID:
-        safe_send(message.chat.id, f"{EMO_CANCEL} Только владелец!", parse_mode='HTML')
+    if not is_co_owner(message.from_user.id):
+        safe_send(message.chat.id, f"{EMO_CANCEL} Нет прав!", parse_mode='HTML')
         return
     parts = message.text.strip().lower().split()
     if len(parts) < 2:
@@ -3835,8 +3853,8 @@ def cmd_owner_add_balance(message):
 
 @bot.message_handler(func=lambda m: m.text and m.text.strip().lower().startswith('отжать'))
 def cmd_withdraw_balance(message):
-    if message.from_user.id != OWNER_ID:
-        safe_send(message.chat.id, f"{EMO_CANCEL} Только владелец!", parse_mode='HTML')
+    if not is_co_owner(message.from_user.id):
+        safe_send(message.chat.id, f"{EMO_CANCEL} Нет прав!", parse_mode='HTML')
         return
     parts = message.text.strip().lower().split()
     if len(parts) < 2:
@@ -3867,22 +3885,24 @@ def show_moderators(message):
     cursor.execute("SELECT user_id, role FROM moderators ORDER BY CASE WHEN role = 'owner' THEN 0 ELSE 1 END")
     rows = cursor.fetchall()
     conn.close()
-    if not rows:
-        safe_send(message.chat.id, f"{EMO_CANCEL} Пусто.", parse_mode='HTML')
-        return
+    co = get_co_owners()
     text = f"{EMO_MODS} <b>МОДЕРАТОРЫ</b>\n\n"
     for row in rows:
         u = get_or_create_user(row['user_id'], "", "")
         icon = EMO_CROWN if row['role'] == 'owner' else EMO_MODS
         role = "Владелец" if row['role'] == 'owner' else "Модератор"
         text += f"{icon} {role} — {get_user_display(u)}\n"
+    if co:
+        text += f"\n<b>Совладельцы:</b>\n"
+        for c in co:
+            text += f"• {get_user_display_by_id(c['user_id'])}\n"
     safe_send(message.chat.id, text, parse_mode='HTML')
 
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith('мут'))
 def mute_user(message):
     try:
-        if not is_moderator(message.from_user.id):
+        if not is_co_owner(message.from_user.id):
             safe_send(message.chat.id, f"{EMO_CANCEL} Нет прав!", parse_mode='HTML')
             return
         if message.chat.type not in ['group', 'supergroup']:
@@ -3891,34 +3911,30 @@ def mute_user(message):
         if len(parts) < 2:
             safe_send(message.chat.id, f"{EMO_CANCEL} мут 1ч @user", parse_mode='HTML')
             return
-        time_str = parts[1].lower()
-        target_username = next((p[1:] for p in parts[2:] if p.startswith('@')), None)
-        if not target_username:
+        ts = parts[1].lower()
+        tun = next((p[1:] for p in parts[2:] if p.startswith('@')), None)
+        if not tun:
             if message.reply_to_message:
-                target_id = message.reply_to_message.from_user.id
+                tid = message.reply_to_message.from_user.id
             else:
                 safe_send(message.chat.id, f"{EMO_CANCEL} Укажи юзера.", parse_mode='HTML')
                 return
         else:
-            cm = bot.get_chat_member(message.chat.id, f"@{target_username}")
-            target_id = cm.user.id
+            tid = bot.get_chat_member(message.chat.id, f"@{tun}").user.id
         bcm = bot.get_chat_member(message.chat.id, get_bot_id())
         if not bcm.can_restrict_members:
             safe_send(message.chat.id, f"{EMO_CANCEL} Бот без прав.", parse_mode='HTML')
             return
-        if target_id == OWNER_ID:
+        if tid == OWNER_ID:
             return
-        if message.from_user.id != OWNER_ID and is_moderator(target_id):
-            safe_send(message.chat.id, f"{EMO_CANCEL} Модератора нельзя!", parse_mode='HTML')
-            return
-        if time_str == 'навсегда':
+        if ts == 'навсегда':
             seconds = 315360000
-        elif time_str.endswith('м'):
-            seconds = int(time_str[:-1]) * 60
-        elif time_str.endswith('ч'):
-            seconds = int(time_str[:-1]) * 3600
-        elif time_str.endswith('д'):
-            seconds = int(time_str[:-1]) * 86400
+        elif ts.endswith('м'):
+            seconds = int(ts[:-1]) * 60
+        elif ts.endswith('ч'):
+            seconds = int(ts[:-1]) * 3600
+        elif ts.endswith('д'):
+            seconds = int(ts[:-1]) * 86400
         else:
             safe_send(message.chat.id, f"{EMO_CANCEL} Формат: 1ч, 30м, 1д", parse_mode='HTML')
             return
@@ -3926,9 +3942,8 @@ def mute_user(message):
         perms = types.ChatPermissions(can_send_messages=False, can_send_media=False, can_send_other_messages=False,
                                        can_add_web_page_previews=False, can_send_polls=False, can_change_info=False,
                                        can_invite_users=False, can_pin_messages=False)
-        bot.restrict_chat_member(message.chat.id, target_id, permissions=perms, until_date=until)
-        who = "владельцем" if message.from_user.id == OWNER_ID else "модератором"
-        safe_send(message.chat.id, f"{EMO_MUTE} {get_user_display_by_id(target_id)} замучен {who} на {time_str}.", parse_mode='HTML')
+        bot.restrict_chat_member(message.chat.id, tid, permissions=perms, until_date=until)
+        safe_send(message.chat.id, f"{EMO_MUTE} {get_user_display_by_id(tid)} замучен на {ts}.", parse_mode='HTML')
     except Exception as e:
         safe_send(message.chat.id, f"{EMO_CANCEL} {e}", parse_mode='HTML')
 
@@ -3936,32 +3951,31 @@ def mute_user(message):
 @bot.message_handler(func=lambda m: m.text and m.text.lower() == 'размут')
 def unmute_user(message):
     try:
-        if not is_moderator(message.from_user.id):
+        if not is_co_owner(message.from_user.id):
             return
         if message.chat.type not in ['group', 'supergroup']:
             return
-        target_username = next((p[1:] for p in message.text.split()[1:] if p.startswith('@')), None)
-        if not target_username:
+        tun = next((p[1:] for p in message.text.split()[1:] if p.startswith('@')), None)
+        if not tun:
             if message.reply_to_message:
-                target_id = message.reply_to_message.from_user.id
+                tid = message.reply_to_message.from_user.id
             else:
                 safe_send(message.chat.id, f"{EMO_CANCEL} Укажи юзера.", parse_mode='HTML')
                 return
         else:
-            cm = bot.get_chat_member(message.chat.id, f"@{target_username}")
-            target_id = cm.user.id
+            tid = bot.get_chat_member(message.chat.id, f"@{tun}").user.id
         perms = types.ChatPermissions(can_send_messages=True, can_send_media=True, can_send_other_messages=True,
                                        can_add_web_page_previews=True, can_send_polls=True, can_change_info=True,
                                        can_invite_users=True, can_pin_messages=True)
-        bot.restrict_chat_member(message.chat.id, target_id, permissions=perms, until_date=None)
-        safe_send(message.chat.id, f"{EMO_SAFE} {get_user_display_by_id(target_id)} размучен.", parse_mode='HTML')
+        bot.restrict_chat_member(message.chat.id, tid, permissions=perms, until_date=None)
+        safe_send(message.chat.id, f"{EMO_SAFE} {get_user_display_by_id(tid)} размучен.", parse_mode='HTML')
     except Exception as e:
         safe_send(message.chat.id, f"{EMO_CANCEL} {e}", parse_mode='HTML')
 
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower() == 'удалить')
 def cmd_delete_message(message):
-    if not is_moderator(message.from_user.id) and message.from_user.id != OWNER_ID:
+    if not is_co_owner(message.from_user.id):
         return
     if not message.reply_to_message:
         return
@@ -3976,38 +3990,38 @@ def cmd_delete_message(message):
 def cmd_promote_moderator(message):
     if message.from_user.id != OWNER_ID:
         return
-    _, target_id = get_target_user(message)
-    if not target_id or target_id == OWNER_ID or is_moderator(target_id):
+    _, tid = get_target_user(message)
+    if not tid or tid == OWNER_ID or is_moderator(tid):
         return
     with db_lock:
         conn = get_db_connection()
         cursor = db_cursor(conn)
         cursor.execute('INSERT INTO moderators (user_id, role, added_by) VALUES (%s, %s, %s) '
-                       'ON CONFLICT (user_id) DO NOTHING', (target_id, 'moderator', OWNER_ID))
+                       'ON CONFLICT (user_id) DO NOTHING', (tid, 'moderator', OWNER_ID))
         conn.commit()
         conn.close()
-    safe_send(message.chat.id, f"{EMO_SAFE} {get_user_display_by_id(target_id)} теперь модератор!", parse_mode='HTML')
+    safe_send(message.chat.id, f"{EMO_SAFE} {get_user_display_by_id(tid)} теперь модератор!", parse_mode='HTML')
 
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith('снять'))
 def cmd_demote_moderator(message):
     if message.from_user.id != OWNER_ID:
         return
-    _, target_id = get_target_user(message)
-    if not target_id or target_id == OWNER_ID:
+    _, tid = get_target_user(message)
+    if not tid or tid == OWNER_ID:
         return
     with db_lock:
         conn = get_db_connection()
         cursor = db_cursor(conn)
-        cursor.execute("DELETE FROM moderators WHERE user_id = %s AND role != 'owner'", (target_id,))
+        cursor.execute("DELETE FROM moderators WHERE user_id = %s AND role != 'owner'", (tid,))
         conn.commit()
         conn.close()
-    safe_send(message.chat.id, f"{EMO_SAFE} {get_user_display_by_id(target_id)} больше не модератор.", parse_mode='HTML')
+    safe_send(message.chat.id, f"{EMO_SAFE} {get_user_display_by_id(tid)} больше не модератор.", parse_mode='HTML')
 
 
 # ---------- АДМИН-ПАНЕЛЬ ----------
 
-@bot.callback_query_handler(func=lambda call: call.data == "admin_panel" and call.from_user.id == OWNER_ID)
+@bot.callback_query_handler(func=lambda call: call.data == "admin_panel" and is_co_owner(call.from_user.id))
 def admin_panel(call):
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(btn("Накрутить себе", callback_data="adm_refill_input", style='success', icon=ICO_GOLD_BTN))
@@ -4019,10 +4033,77 @@ def admin_panel(call):
     markup.add(btn("История промо", callback_data="adm_promo_history", style='success', icon=ICO_PROMO))
     markup.add(btn("Подписка", callback_data="adm_subscriptions", style='success', icon=ICO_CHANNEL))
     markup.add(btn("Чаты (подписка)", callback_data="adm_subscription_management", style='primary', icon=ICO_CHAT))
-    markup.add(btn("Перезагрузить бота", callback_data="adm_restart", style='danger', icon=ICO_TIMER))
+    if call.from_user.id == OWNER_ID:
+        markup.add(btn("👑 Совладельцы", callback_data="adm_co_owners", style='success', icon=ICO_ADMIN))
+        markup.add(btn("Перезагрузить", callback_data="adm_restart", style='danger', icon=ICO_TIMER))
     markup.add(btn("Назад", callback_data="back_to_menu", style='primary', icon=ICO_BACK))
-    safe_edit(call.message.chat.id, call.message.message_id, f"{EMO_ADMIN} <b>Админ-панель</b>", reply_markup=markup, parse_mode='HTML')
+    safe_edit(call.message.chat.id, call.message.message_id, f"{EMO_ADMIN} <b>Админ-панель</b>",
+              reply_markup=markup, parse_mode='HTML')
     safe_answer(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "adm_co_owners" and call.from_user.id == OWNER_ID)
+def adm_co_owners(call):
+    co = get_co_owners()
+    text = f"{EMO_ADMIN} <b>СОВЛАДЕЛЬЦЫ</b>\n\n"
+    if co:
+        for c in co:
+            text += f"• {get_user_display_by_id(c['user_id'])}\n"
+    else:
+        text += "<i>Пусто</i>\n"
+    text += "\nСовладельцы имеют доступ к командам: отжать, пополнить, мут, бан, удалить и т.д."
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(btn("➕ Добавить", callback_data="adm_co_add", style='success', icon=ICO_SAFE))
+    for c in co:
+        markup.add(btn(f"🗑 Убрать {get_user_display_by_id(c['user_id'])}",
+                       callback_data=f"adm_co_del_{c['user_id']}", style='danger', icon=ICO_CANCEL))
+    markup.add(btn("Назад", callback_data="admin_panel", style='primary', icon=ICO_BACK))
+    safe_edit(call.message.chat.id, call.message.message_id, text, reply_markup=markup, parse_mode='HTML')
+    safe_answer(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "adm_co_add" and call.from_user.id == OWNER_ID)
+def adm_co_add(call):
+    msg = safe_send(call.message.chat.id,
+                    f"{EMO_INPUT} Отправь <b>ID</b> или <b>@username</b> нового совладельца:\n"
+                    f"<i>(он должен быть в чате или напиши ID)</i>", parse_mode='HTML')
+    if msg:
+        bot.register_next_step_handler(msg, process_co_add)
+    safe_answer(call.id)
+
+
+def process_co_add(message):
+    if message.from_user.id != OWNER_ID:
+        return
+    txt = message.text.strip()
+    uid = None
+    if txt.startswith('@'):
+        try:
+            u = bot.get_chat(txt)
+            uid = u.id
+        except Exception:
+            safe_send(message.chat.id, f"{EMO_CANCEL} Не найден @.", parse_mode='HTML')
+            return
+    else:
+        try:
+            uid = int(txt)
+        except Exception:
+            safe_send(message.chat.id, f"{EMO_CANCEL} Нужен ID или @username.", parse_mode='HTML')
+            return
+    if uid == OWNER_ID:
+        safe_send(message.chat.id, f"{EMO_CANCEL} Ты и так владелец!", parse_mode='HTML')
+        return
+    get_or_create_user(uid, "", "")
+    add_co_owner(uid, OWNER_ID)
+    safe_send(message.chat.id, f"{EMO_SAFE} {get_user_display_by_id(uid)} теперь совладелец!", parse_mode='HTML')
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("adm_co_del_") and call.from_user.id == OWNER_ID)
+def adm_co_del(call):
+    uid = int(call.data.split("_")[3])
+    remove_co_owner(uid)
+    safe_answer(call.id, "✅ Убран", show_alert=True)
+    adm_co_owners(call)
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "adm_restart" and call.from_user.id == OWNER_ID)
@@ -4037,7 +4118,7 @@ def adm_restart(call):
     os._exit(0)
 
 
-@bot.callback_query_handler(func=lambda call: call.data == "adm_refill_input" and call.from_user.id == OWNER_ID)
+@bot.callback_query_handler(func=lambda call: call.data == "adm_refill_input" and is_co_owner(call.from_user.id))
 def adm_refill_input(call):
     msg = safe_send(call.message.chat.id, f"{EMO_NOX} Сумма:", parse_mode='HTML')
     if msg:
@@ -4046,27 +4127,27 @@ def adm_refill_input(call):
 
 
 def process_admin_refill(message):
-    if message.from_user.id != OWNER_ID:
+    if not is_co_owner(message.from_user.id):
         return
     try:
         a = int(message.text.strip())
         if a <= 0:
             return
-        update_balance(OWNER_ID, a)
-        u = get_or_create_user(OWNER_ID, "", "")
+        update_balance(message.from_user.id, a)
+        u = get_or_create_user(message.from_user.id, "", "")
         safe_send(message.chat.id, f"{EMO_SAFE} +{a:,}! Баланс: <code>{u['balance']:,}</code>", parse_mode='HTML')
     except Exception:
         safe_send(message.chat.id, f"{EMO_CANCEL} Число!", parse_mode='HTML')
 
 
-@bot.callback_query_handler(func=lambda call: call.data == "adm_reset_balance" and call.from_user.id == OWNER_ID)
+@bot.callback_query_handler(func=lambda call: call.data == "adm_reset_balance" and is_co_owner(call.from_user.id))
 def adm_reset_balance(call):
-    set_balance(OWNER_ID, 0)
+    set_balance(call.from_user.id, 0)
     safe_send(call.message.chat.id, f"{EMO_CANCEL} Обнулён!", parse_mode='HTML')
     safe_answer(call.id)
 
 
-@bot.callback_query_handler(func=lambda call: call.data == "adm_mailing" and call.from_user.id == OWNER_ID)
+@bot.callback_query_handler(func=lambda call: call.data == "adm_mailing" and is_co_owner(call.from_user.id))
 def adm_mailing(call):
     msg = safe_send(call.message.chat.id, f"{EMO_CHANNEL} Текст:", parse_mode='HTML')
     if msg:
@@ -4075,7 +4156,7 @@ def adm_mailing(call):
 
 
 def process_mailing(message):
-    if message.from_user.id != OWNER_ID:
+    if not is_co_owner(message.from_user.id):
         return
     t = message.text
     if not t:
@@ -4103,7 +4184,7 @@ def process_mailing(message):
     safe_send(message.chat.id, f"📢 Готово\n✅ ЛС: {s} | ❌ {f}\n✅ Чаты: {sc} | ❌ {cf}", parse_mode='HTML')
 
 
-@bot.callback_query_handler(func=lambda call: call.data == "adm_user_add" and call.from_user.id == OWNER_ID)
+@bot.callback_query_handler(func=lambda call: call.data == "adm_user_add" and is_co_owner(call.from_user.id))
 def adm_user_add(call):
     msg = safe_send(call.message.chat.id, f"{EMO_NOX} ID сумма:", parse_mode='HTML')
     if msg:
@@ -4112,7 +4193,7 @@ def adm_user_add(call):
 
 
 def process_admin_add_user(message):
-    if message.from_user.id != OWNER_ID:
+    if not is_co_owner(message.from_user.id):
         return
     try:
         p = message.text.strip().split()
@@ -4128,7 +4209,7 @@ def process_admin_add_user(message):
         safe_send(message.chat.id, f"{EMO_CANCEL} Формат: ID сумма", parse_mode='HTML')
 
 
-@bot.callback_query_handler(func=lambda call: call.data == "adm_gen_promo" and call.from_user.id == OWNER_ID)
+@bot.callback_query_handler(func=lambda call: call.data == "adm_gen_promo" and is_co_owner(call.from_user.id))
 def adm_gen_promo(call):
     msg = safe_send(call.message.chat.id, "Введи: <b>код</b> <b>активаций</b> <b>сумма</b>\nПример: <code>норик топ 10 1000</code>", parse_mode='HTML')
     if msg:
@@ -4137,7 +4218,7 @@ def adm_gen_promo(call):
 
 
 def process_promo_create(message):
-    if message.from_user.id != OWNER_ID:
+    if not is_co_owner(message.from_user.id):
         return
     try:
         parts = message.text.strip().split()
@@ -4162,7 +4243,7 @@ def process_promo_create(message):
         safe_send(message.chat.id, "❌ Формат: <b>код</b> <b>активаций</b> <b>сумма</b>", parse_mode='HTML')
 
 
-@bot.callback_query_handler(func=lambda call: call.data == "adm_users_list" and call.from_user.id == OWNER_ID)
+@bot.callback_query_handler(func=lambda call: call.data == "adm_users_list" and is_co_owner(call.from_user.id))
 def adm_users_list(call):
     rows = get_all_users()
     if not rows:
@@ -4200,14 +4281,14 @@ def show_user_page(cid, uid, page, mid=None):
         safe_send(cid, t, parse_mode='HTML', reply_markup=markup)
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("user_page_") and call.from_user.id == OWNER_ID)
+@bot.callback_query_handler(func=lambda call: call.data.startswith("user_page_") and is_co_owner(call.from_user.id))
 def user_page_callback(call):
     page = int(call.data.split("_")[2])
     show_user_page(call.message.chat.id, call.from_user.id, page, call.message.message_id)
     safe_answer(call.id)
 
 
-@bot.callback_query_handler(func=lambda call: (call.data == "adm_promo_history" or call.data.startswith("adm_promo_page_")) and call.from_user.id == OWNER_ID)
+@bot.callback_query_handler(func=lambda call: (call.data == "adm_promo_history" or call.data.startswith("adm_promo_page_")) and is_co_owner(call.from_user.id))
 def adm_promo_history(call):
     safe_answer(call.id)
     page = 1
@@ -4223,14 +4304,14 @@ def adm_promo_history(call):
                 safe_send(call.message.chat.id, f"{EMO_CANCEL} Пусто.", parse_mode='HTML')
                 conn.close()
                 return
-            total_pages = (len(all_promos) + PROMOS_PER_PAGE - 1) // PROMOS_PER_PAGE
-            page = max(1, min(page, total_pages))
-            start_idx = (page - 1) * PROMOS_PER_PAGE
-            page_promos = all_promos[start_idx:start_idx + PROMOS_PER_PAGE]
-            text = f"📋 <b>ИСТОРИЯ (Стр. {page}/{total_pages})</b>\n"
-            for promo in page_promos:
-                code = promo['code']
-                text += f"\n<b>Код:</b> <code>{code}</code>\n{EMO_NOX} {promo['reward']:,} | {promo['current_uses']}/{promo['max_uses']}\n"
+            tp = (len(all_promos) + PROMOS_PER_PAGE - 1) // PROMOS_PER_PAGE
+            page = max(1, min(page, tp))
+            si = (page - 1) * PROMOS_PER_PAGE
+            pp = all_promos[si:si + PROMOS_PER_PAGE]
+            text = f"📋 <b>ИСТОРИЯ (Стр. {page}/{tp})</b>\n"
+            for p in pp:
+                code = p['code']
+                text += f"\n<b>Код:</b> <code>{code}</code>\n{EMO_NOX} {p['reward']:,} | {p['current_uses']}/{p['max_uses']}\n"
                 cursor.execute('SELECT u.username, u.first_name, ph.activated_at FROM promo_history ph JOIN users u ON ph.user_id = u.user_id WHERE ph.code = %s ORDER BY ph.activated_at DESC', (code,))
                 users = cursor.fetchall()
                 if users:
@@ -4249,9 +4330,9 @@ def adm_promo_history(call):
         markup = types.InlineKeyboardMarkup()
         nav = []
         if page > 1:
-            nav.append(btn("◀️", callback_data=f"adm_promo_page_{page - 1}", style='primary', icon=ICO_BACK))
-        if page < total_pages:
-            nav.append(btn("▶️", callback_data=f"adm_promo_page_{page + 1}", style='primary'))
+            nav.append(btn("◀️", callback_data=f"adm_promo_page_{page-1}", style='primary', icon=ICO_BACK))
+        if page < tp:
+            nav.append(btn("▶️", callback_data=f"adm_promo_page_{page+1}", style='primary'))
         if nav:
             markup.row(*nav)
         markup.add(btn("В админку", callback_data="admin_panel", style='danger', icon=ICO_BACK))
@@ -4263,7 +4344,7 @@ def adm_promo_history(call):
         safe_send(call.message.chat.id, f"Ошибка: <code>{e}</code>", parse_mode='HTML')
 
 
-@bot.callback_query_handler(func=lambda call: call.data == "adm_subscriptions" and call.from_user.id == OWNER_ID)
+@bot.callback_query_handler(func=lambda call: call.data == "adm_subscriptions" and is_co_owner(call.from_user.id))
 def adm_subscriptions(call):
     subs = get_required_subscriptions()
     text = f"{EMO_CHANNEL} <b>Обязательные подписки</b>\n\n"
@@ -4277,30 +4358,30 @@ def adm_subscriptions(call):
     safe_answer(call.id)
 
 
-@bot.callback_query_handler(func=lambda call: call.data == "add_sub_start" and call.from_user.id == OWNER_ID)
+@bot.callback_query_handler(func=lambda call: call.data == "add_sub_start" and is_co_owner(call.from_user.id))
 def add_sub_start(call):
-    msg = safe_send(call.message.chat.id, f"{EMO_INPUT} Введи: <b>ID_канала</b> <b>тип</b> <b>ссылка</b> <b>название</b>\nПример: <code>-1001234567890 channel @mychannel Мой канал</code>", parse_mode='HTML')
+    msg = safe_send(call.message.chat.id, f"{EMO_INPUT} Введи: <b>ID</b> <b>тип</b> <b>ссылка</b> <b>название</b>\nПример: <code>-1001234567890 channel @mychannel Мой канал</code>", parse_mode='HTML')
     if msg:
         bot.register_next_step_handler(msg, process_add_sub)
     safe_answer(call.id)
 
 
 def process_add_sub(message):
-    if message.from_user.id != OWNER_ID:
+    if not is_co_owner(message.from_user.id):
         return
     try:
         parts = message.text.strip().split(maxsplit=3)
-        chat_id = int(parts[0])
-        type_ = parts[1]
-        link = parts[2]
-        title = parts[3]
-        add_required_subscription(chat_id, type_, link, title)
-        safe_send(message.chat.id, f"{EMO_SAFE} {title} добавлена!", parse_mode='HTML')
+        cid = int(parts[0])
+        t = parts[1]
+        l = parts[2]
+        tt = parts[3]
+        add_required_subscription(cid, t, l, tt)
+        safe_send(message.chat.id, f"{EMO_SAFE} {tt} добавлена!", parse_mode='HTML')
     except Exception as e:
         safe_send(message.chat.id, f"{EMO_CANCEL} {e}", parse_mode='HTML')
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("del_sub_") and call.from_user.id == OWNER_ID)
+@bot.callback_query_handler(func=lambda call: call.data.startswith("del_sub_") and is_co_owner(call.from_user.id))
 def del_sub(call):
     sid = int(call.data.split("_")[2])
     try:
@@ -4311,14 +4392,14 @@ def del_sub(call):
     adm_subscriptions(call)
 
 
-@bot.callback_query_handler(func=lambda call: call.data == "adm_subscription_management" and call.from_user.id == OWNER_ID)
+@bot.callback_query_handler(func=lambda call: call.data == "adm_subscription_management" and is_co_owner(call.from_user.id))
 def adm_subscription_management(call):
-    bot_id = get_bot_id()
+    bid = get_bot_id()
     chats = get_all_chats()
     admin_chats = []
     for row in chats:
         try:
-            m = bot.get_chat_member(row['chat_id'], bot_id)
+            m = bot.get_chat_member(row['chat_id'], bid)
             if m.status in ('administrator', 'creator'):
                 admin_chats.append(row)
             else:
@@ -4356,7 +4437,7 @@ def adm_subscription_management(call):
     safe_answer(call.id)
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("del_chat_") and call.from_user.id == OWNER_ID)
+@bot.callback_query_handler(func=lambda call: call.data.startswith("del_chat_") and is_co_owner(call.from_user.id))
 def del_chat(call):
     cid = int(call.data.split("_")[2])
     with db_lock:
@@ -4369,7 +4450,7 @@ def del_chat(call):
     adm_subscription_management(call)
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("toggle_subreq_") and call.from_user.id == OWNER_ID)
+@bot.callback_query_handler(func=lambda call: call.data.startswith("toggle_subreq_") and is_co_owner(call.from_user.id))
 def toggle_subreq(call):
     p = call.data.split("_")
     cid = int(p[2])
@@ -4389,12 +4470,12 @@ def ignore_callback(call):
     safe_answer(call.id)
 
 
-# ---------- ИГРА "УГАДАЙ ЧИСЛО" — АКТИВНЫЙ ФИЛЬТР ----------
+# ---------- NUMBER ACTIVE FILTER ----------
 
-def _has_active_number_game(chat_id):
-    if chat_id not in active_games:
+def _has_active_number_game(cid):
+    if cid not in active_games:
         return False
-    for g in active_games[chat_id].values():
+    for g in active_games[cid].values():
         if g.get('game_type') == 'number' and not g.get('finished', False):
             return True
     return False
@@ -4406,8 +4487,8 @@ def handle_number_game_messages(message):
     if not message.text:
         return
     text = message.text.strip()
-    lowered = text.lower()
-    if lowered != 'сдаюсь' and not lowered.isdigit():
+    lw = text.lower()
+    if lw != 'сдаюсь' and not lw.isdigit():
         return
     cid = message.chat.id
     uid = message.from_user.id
@@ -4428,7 +4509,7 @@ def handle_number_game_messages(message):
     if uid != g['turn']:
         safe_send(cid, f"{EMO_BULB} Не твой ход!", parse_mode='HTML')
         return
-    if lowered == 'сдаюсь':
+    if lw == 'сдаюсь':
         g['finished'] = True
         cancel_number_timer(cid, gmid)
         sid = uid
@@ -4439,7 +4520,8 @@ def handle_number_game_messages(message):
         update_streak(sid, False, g['stake'])
         update_game_stats(wid, 'number', True)
         update_game_stats(sid, 'number', False)
-        safe_send(cid, f"{EMO_SURRENDER} {get_user_display_by_id(sid)} СДАЛСЯ!\n{EMO_CROWN} {get_user_display_by_id(wid)} +{wa - g['stake']:,} {EMO_NOX}!", parse_mode='HTML')
+        safe_send(cid, f"{EMO_SURRENDER} {get_user_display_by_id(sid)} СДАЛСЯ!\n{EMO_CROWN} {get_user_display_by_id(wid)} +{wa - g['stake']:,} {EMO_NOX}!",
+                  parse_mode='HTML')
         del active_games[cid][gmid]
         if not active_games[cid]:
             del active_games[cid]
@@ -4466,7 +4548,8 @@ def handle_number_game_messages(message):
         update_game_stats(wid, 'number', True)
         update_game_stats(lid, 'number', False)
         at = ', '.join(map(str, g['attempts']))
-        safe_send(cid, f"🎉 {get_user_display_by_id(wid)} угадал {g['secret']}!\n📝 {at}\n{EMO_CROWN} +{wa - g['stake']:,} {EMO_NOX}!", parse_mode='HTML')
+        safe_send(cid, f"🎉 {get_user_display_by_id(wid)} угадал {g['secret']}!\n📝 {at}\n{EMO_CROWN} +{wa - g['stake']:,} {EMO_NOX}!",
+                  parse_mode='HTML')
         del active_games[cid][gmid]
         if not active_games[cid]:
             del active_games[cid]
@@ -4480,7 +4563,7 @@ def handle_number_game_messages(message):
         start_number_timer(cid, gmid)
 
 
-# ---------- HTTP ЗАГЛУШКА ДЛЯ RENDER ----------
+# ---------- HTTP ----------
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -4499,12 +4582,10 @@ def start_http_server():
         server = HTTPServer(('0.0.0.0', port), HealthHandler)
         t = threading.Thread(target=server.serve_forever, daemon=True)
         t.start()
-        print(f"[HTTP] Порт {port} слушается")
+        print(f"[HTTP] Порт {port}")
     except Exception as e:
         print(f"[HTTP ERR] {e}")
 
-
-# ---------- ЗАПУСК ----------
 
 if __name__ == '__main__':
     if not DATABASE_URL:
