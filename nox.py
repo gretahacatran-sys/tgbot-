@@ -46,16 +46,15 @@ user_clan_cache = {}
 USER_CLAN_TTL = 15
 BOT_ID_CACHE = {'id': None}
 
-# ============ СЛОТЫ: РАСКЛАДКА ============
 SLOT_WEIGHTS = [
-    ('lose', 31.98),      # x0 — почти треть
-    ('tangerine', 20.0),  # x0.75
-    ('kiwi', 16.0),       # x1.5
-    ('cherry', 12.0),     # x2
-    ('strawberry', 10.0), # x2.5
-    ('seven', 6.0),       # x3
-    ('clover', 4.0),      # фри спин + 1000
-    ('diamond', 0.02),    # x10 — почти невозможно
+    ('lose', 29.52),
+    ('tangerine', 21.98),
+    ('kiwi', 16.0),
+    ('cherry', 12.0),
+    ('strawberry', 10.0),
+    ('clover', 6.0),
+    ('seven', 4.0),
+    ('diamond', 0.50),
 ]
 SLOT_SYMBOLS = {
     'tangerine': ('5792092620784146419', '🍊'),
