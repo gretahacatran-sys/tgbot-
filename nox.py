@@ -46,6 +46,46 @@ user_clan_cache = {}
 USER_CLAN_TTL = 15
 BOT_ID_CACHE = {'id': None}
 
+# ============ СЛОТЫ: РАСКЛАДКА ============
+SLOT_WEIGHTS = [
+    ('lose', 15.0),
+    ('tangerine', 35.0),
+    ('clover', 10.0),
+    ('seven', 5.0),
+    ('diamond', 0.8),
+    ('strawberry', 25.0),
+    ('kiwi', 9.2),
+]
+SLOT_SYMBOLS = {
+    'tangerine': ('5792092620784146419', '🍊'),
+    'clover': ('5791885057899631820', '🍀'),
+    'seven': ('5792024631451850893', '7️⃣'),
+    'diamond': ('5791633806607782442', '💎'),
+    'strawberry': ('5794330032457389446', '🍓'),
+    'kiwi': ('5791848593627289156', '🥝'),
+}
+SLOT_MULT = {
+    'tangerine': 0.75,
+    'seven': 3.0,
+    'diamond': 10.0,
+    'strawberry': 2.5,
+    'kiwi': 1.5,
+}
+
+
+def roll_slot_outcome():
+    r = random.random() * 100.0
+    acc = 0.0
+    for name, w in SLOT_WEIGHTS:
+        acc += w
+        if r < acc:
+            return name
+    return 'lose'
+
+
+def emo_tag(emoji_id, fallback):
+    return f'<tg-emoji emoji-id="{emoji_id}">{fallback}</tg-emoji>'
+
 
 def get_bot_id():
     if BOT_ID_CACHE['id'] is None:
@@ -165,8 +205,6 @@ ICO_NUMBER = '6323436631428695574'
 ICO_VS = '5354932922203782306'
 ICO_CLAN_HEADER = '5224575413253274698'
 
-SLOT_EMOJI_MAP = {'🍒': EMO_CHERRY, '🍋': EMO_LEMON, '🍊': EMO_ORANGE, '💎': EMO_DIAMOND}
-
 
 def btn(text, callback_data=None, url=None, style=None, icon=None):
     kwargs = {'text': text}
@@ -249,7 +287,6 @@ def safe_answer(call_id, text=None, show_alert=False):
 
 
 # ================== ПУЛ СОЕДИНЕНИЙ ==================
-
 _db_pool = None
 _pool_lock = threading.Lock()
 
@@ -405,7 +442,6 @@ def init_db():
             'ON CONFLICT (user_id) DO NOTHING',
             (OWNER_ID, 'owner', OWNER_ID))
 
-        # Сидирование дефолтных эмодзи/корон
         cursor.execute('SELECT COUNT(*) AS c FROM clan_emojis')
         if cursor.fetchone()['c'] == 0:
             default_emojis = [
@@ -444,7 +480,9 @@ def init_db():
         conn.close()
 
 
-# ---------- ХЕЛПЕРЫ КЛАНОВ ----------
+# ==========================================================
+# ============   КЛАНЫ — ХЕЛПЕРЫ   =========================
+# ==========================================================
 
 def get_user_clan(user_id, use_cache=True):
     if use_cache:
@@ -960,6 +998,19 @@ def build_balance_text(user):
     return f"{display}\n{EMO_NOX} <code>{user['balance']:,}</code> ноксов"
 
 
+def get_chat_link(chat_id):
+    try:
+        chat = bot.get_chat(chat_id)
+        if getattr(chat, 'username', None):
+            return f"https://t.me/{chat.username}"
+    except Exception:
+        pass
+    try:
+        return bot.export_chat_invite_link(chat_id)
+    except Exception:
+        return None
+
+
 # ---------- ПОДПИСКИ ----------
 
 def get_required_subscriptions():
@@ -1054,9 +1105,7 @@ def check_required_subscriptions(user_id, chat_id, message_id=None, sender_chat=
 
     not_confirmed = []
     for sub in subs:
-        if is_user_subscribed_to_channel(user_id, sub['chat_id']):
-            pass
-        else:
+        if not is_user_subscribed_to_channel(user_id, sub['chat_id']):
             not_confirmed.append(sub)
 
     if not_confirmed:
@@ -1121,7 +1170,7 @@ def handle_subscribe_check(call):
 
 
 # ==========================================================
-# =========== КЛАНЫ — ХЭНДЛЕРЫ (САМЫЕ ПЕРВЫЕ) ===============
+# ============   КЛАНЫ — ХЭНДЛЕРЫ (САМЫЕ ПЕРВЫЕ)   ========
 # ==========================================================
 
 def build_clans_list_text(page=0):
@@ -1231,6 +1280,25 @@ def welcome_new_member(message):
             if new_user.id == get_bot_id():
                 add_chat(message.chat.id, message.chat.title)
                 safe_send(message.chat.id, f"{EMO_SAFE} Бот активирован!", parse_mode='HTML')
+                # Уведомление владельцу в ЛС
+                try:
+                    link = get_chat_link(message.chat.id)
+                    title = message.chat.title or str(message.chat.id)
+                    chat_type = message.chat.type
+                    adder = message.from_user
+                    adder_disp = (adder.first_name or adder.username or f"id{adder.id}") if adder else "—"
+                    notif = (f"🆕 <b>Бот добавлен в чат!</b>\n\n"
+                             f"📛 Название: <b>{title}</b>\n"
+                             f"🆔 ID: <code>{message.chat.id}</code>\n"
+                             f"📂 Тип: <b>{chat_type}</b>\n"
+                             f"👤 Добавил: {adder_disp}")
+                    markup = types.InlineKeyboardMarkup(row_width=1)
+                    if link:
+                        notif += f"\n🔗 Ссылка: {link}"
+                        markup.add(btn("Открыть чат", url=link, style='primary', icon=ICO_CHAT))
+                    safe_send(OWNER_ID, notif, parse_mode='HTML', reply_markup=markup)
+                except Exception as e:
+                    print(f"[OWNER NOTIFY ERR] {e}")
             continue
         user = get_or_create_user(new_user.id, new_user.username, new_user.first_name)
         display = get_user_display(user)
@@ -2488,6 +2556,46 @@ def reset_solo_games(call):
         safe_answer(call.id, "✅ Сброшено!", show_alert=True)
 
 
+# ---------- НОВЫЕ СЛОТЫ ----------
+
+def _show_slots_row(symbols_list):
+    return ' | '.join(symbols_list)
+
+
+def _slots_send_result(chat_id, outcome, stake):
+    if outcome == 'lose':
+        pool = list(SLOT_SYMBOLS.values())
+        random.shuffle(pool)
+        syms = [emo_tag(eid, fb) for eid, fb in pool[:4]]
+        text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
+                f"{EMO_CANCEL} Проигрыш. -{stake:,} {EMO_NOX}")
+        safe_send(chat_id, text, parse_mode='HTML')
+        return
+    eid, fb = SLOT_SYMBOLS[outcome]
+    syms = [emo_tag(eid, fb)] * 4
+    mult = SLOT_MULT[outcome]
+    win = int(stake * mult)
+    if outcome == 'tangerine':
+        text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
+                f"💰 Возврат x{mult} → +{win:,} {EMO_NOX}")
+    elif outcome == 'seven':
+        text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
+                f"{EMO_FIRE} x{mult}! → +{win:,} {EMO_NOX}")
+    elif outcome == 'diamond':
+        text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
+                f"💎💎💎 JACKPOT x{mult}! → +{win:,} {EMO_NOX}")
+    elif outcome == 'strawberry':
+        text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
+                f"🍓 x{mult}! → +{win:,} {EMO_NOX}")
+    elif outcome == 'kiwi':
+        text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
+                f"🥝 x{mult}! → +{win:,} {EMO_NOX}")
+    else:
+        text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
+                f"🔥 x{mult}! → +{win:,} {EMO_NOX}")
+    safe_send(chat_id, text, parse_mode='HTML')
+
+
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith('слот'))
 def cmd_slots_chat(message):
     if check_pm_game(message):
@@ -2521,33 +2629,40 @@ def cmd_slots_chat(message):
         return
     update_balance(user_id, -stake)
     try:
-        emojis = ['🍒', '🍋', '🍊', '💎']
-        rt = get_next_result(user_id)
-        if rt == 'diamond':
-            result = ['💎'] * 4
-            wm = 10
-        elif rt == 'fruit':
-            f = random.choice(['🍒', '🍋', '🍊'])
-            result = [f] * 4
-            wm = 2
-        else:
-            while True:
-                result = [random.choice(emojis) for _ in range(4)]
-                if not (all(e == result[0] for e in result) or all(e == '💎' for e in result)):
+        chain = 0
+        while True:
+            outcome = roll_slot_outcome()
+            if outcome == 'clover':
+                # фри спин + 1000
+                update_balance(user_id, 1000)
+                eid, fb = SLOT_SYMBOLS['clover']
+                syms = [emo_tag(eid, fb)] * 4
+                safe_send(chat_id,
+                          f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
+                          f"🍀 ФРИ СПИН! +1,000 {EMO_NOX}\n"
+                          f"🔄 Крутим ещё (без списания)...",
+                          parse_mode='HTML')
+                time.sleep(1.5)
+                chain += 1
+                if chain >= 5:
+                    safe_send(chat_id, f"🍀 Цепочка из 5 фри спинов прервана.", parse_mode='HTML')
                     break
-            wm = 0
-        rd = ' | '.join(SLOT_EMOJI_MAP[e] for e in result)
-        if wm > 0:
-            wa = stake * wm
-            update_balance(user_id, wa)
-            caption = f"{EMO_SLOTS} [ {rd} ]\n+<b>{wa:,}</b> {EMO_NOX}! (x{wm})"
-        else:
-            caption = f"{EMO_SLOTS} [ {rd} ]\n-<b>{stake:,}</b> {EMO_NOX}"
-        safe_send(chat_id, caption, parse_mode='HTML')
+                continue
+            # не клевер — финал
+            if outcome == 'lose':
+                _slots_send_result(chat_id, 'lose', stake)
+            else:
+                mult = SLOT_MULT[outcome]
+                win = int(stake * mult)
+                update_balance(user_id, win)
+                _slots_send_result(chat_id, outcome, stake)
+            break
     except Exception as e:
         print(f"[SLOTS ERR] {e}")
         update_balance(user_id, stake)
 
+
+# ---------- СУНДУК ----------
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith('сундук'))
 def cmd_chest(message):
@@ -2726,6 +2841,8 @@ def clean_chest(user_id):
     solo_game_stakes.pop(user_id, None)
 
 
+# ---------- ЭТАЖИ ----------
+
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith('этажи'))
 def cmd_floors_game(message):
     if check_pm_game(message):
@@ -2822,7 +2939,7 @@ def floors_take(call):
     stake = int(parts[4])
     mult = float(parts[5])
     if call.from_user.id != user_id:
-        safe_answer(call.id, "🖕 Не твоя!", show_alert=True)
+        safe_answer(call.id, "🖖 Не твоя!", show_alert=True)
         return
     wa = int(stake * mult)
     update_balance(user_id, wa)
@@ -5082,6 +5199,8 @@ def del_sub(call):
     adm_subscriptions(call)
 
 
+# ==== АДМИНКА: ЧАТЫ (СО ССЫЛКАМИ) ====
+
 @bot.callback_query_handler(func=lambda call: call.data == "adm_subscription_management" and call.from_user.id == OWNER_ID)
 def adm_subscription_management(call):
     bot_id = get_bot_id()
@@ -5113,8 +5232,16 @@ def adm_subscription_management(call):
             st = "✅" if row['sub_required'] else "❌"
             ns = 0 if row['sub_required'] else 1
             title = row['chat_title'] or row['chat_id']
-            markup.add(btn(f"{st} {title}", callback_data=f"toggle_subreq_{row['chat_id']}_{ns}", style='primary', icon=ICO_CHAT))
-            markup.add(btn(f"🗑 Удалить", callback_data=f"del_chat_{row['chat_id']}", style='danger', icon=ICO_CANCEL))
+            link = get_chat_link(row['chat_id'])
+            # Кнопка-ссылка на сам чат
+            if link:
+                markup.add(btn(f"🔗 {title}", url=link, style='primary', icon=ICO_CHAT))
+            else:
+                text += f"• {title} (без ссылки)\n"
+            # Кнопка переключения подписки
+            markup.add(btn(f"{st} Подписка: {title}", callback_data=f"toggle_subreq_{row['chat_id']}_{ns}", style='primary', icon=ICO_CHAT))
+            # Удаление
+            markup.add(btn(f"🗑 Удалить {title}", callback_data=f"del_chat_{row['chat_id']}", style='danger', icon=ICO_CANCEL))
     else:
         text += "Нет.\n"
     markup.add(btn("Назад", callback_data="admin_panel", style='danger', icon=ICO_BACK))
