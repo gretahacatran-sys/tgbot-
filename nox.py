@@ -95,7 +95,6 @@ def _slot_total_weight():
 
 
 def roll_slot_outcome(user_balance=0):
-    """Клевер выпадает только если баланс игрока > CLOVER_MIN_BALANCE."""
     total = _slot_total_weight()
     r = random.random() * total
     acc = 0.0
@@ -950,7 +949,7 @@ def handle_left_member(message):
         return
     user_db = get_or_create_user(left_user.id, left_user.username, left_user.first_name)
     display_name = get_user_display(user_db)
-    safe_send(message.chat.id, f"👋 {display_name} вышел из чата 🤦🏿‍♂️", parse_mode='HTML')
+    safe_send(message.chat.id, f"{EMO_WELCOME} {display_name} вышел из чата 🤦🏿‍♂️", parse_mode='HTML')
 
 
 def donate_menu_start(message):
@@ -1626,7 +1625,7 @@ def reset_solo_games(call):
         safe_answer(call.id, "✅ Сброшено!", show_alert=True)
 
 
-# ---------- НОВЫЕ СЛОТЫ ----------
+# ---------- СЛОТЫ ----------
 
 def _show_slots_row(symbols_list):
     return ' | '.join(symbols_list)
@@ -1637,37 +1636,32 @@ def _slots_send_result(chat_id, outcome, stake):
         pool = list(SLOT_SYMBOLS.values())
         random.shuffle(pool)
         syms = [emo_tag(eid, fb) for eid, fb in pool[:4]]
-        text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
-                f"{EMO_CANCEL} Проигрыш. -{stake:,} {EMO_NOX}")
+        text = f"[ {_show_slots_row(syms)} ]\n{EMO_CANCEL} Проигрыш. -{stake:,} {EMO_NOX}"
         safe_send(chat_id, text, parse_mode='HTML')
         return
     if outcome == 'fifty':
         eid, fb = SLOT_SYMBOLS['fifty']
         syms = [emo_tag(eid, fb)] * 4
         win = int(stake * 0.5)
-        text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
-                f"⚖️ Возврат 50% → +{win:,} {EMO_NOX}")
+        text = f"[ {_show_slots_row(syms)} ]\n{EMO_HANDSHAKE} Возврат 50% → +{win:,} {EMO_NOX}"
         safe_send(chat_id, text, parse_mode='HTML')
         return
     if outcome == 'devstv':
         eid, fb = SLOT_SYMBOLS['devstv']
         syms = [emo_tag(eid, fb)] * 4
-        text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
-                f"💀 Ты умрёшь девственником")
+        text = f"[ {_show_slots_row(syms)} ]\n{EMO_SKULL} Ты умрёшь девственником"
         safe_send(chat_id, text, parse_mode='HTML')
         return
     if outcome == 'minus2500':
         eid, fb = SLOT_SYMBOLS['minus2500']
         syms = [emo_tag(eid, fb)] * 4
-        text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
-                f"💀 -{stake + 2500:,} {EMO_NOX}! (ставка + 2500)")
+        text = f"[ {_show_slots_row(syms)} ]\n{EMO_SKULL} -{stake + 2500:,} {EMO_NOX}! (ставка + 2500)"
         safe_send(chat_id, text, parse_mode='HTML')
         return
     if outcome == 'neutral':
         eid, fb = SLOT_SYMBOLS['neutral']
         syms = [emo_tag(eid, fb)] * 4
-        text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
-                f"🖼️ Зачем ты вообще родился")
+        text = f"[ {_show_slots_row(syms)} ]\nЗачем ты вообще родился"
         safe_send(chat_id, text, parse_mode='HTML')
         return
     eid, fb = SLOT_SYMBOLS[outcome]
@@ -1675,35 +1669,25 @@ def _slots_send_result(chat_id, outcome, stake):
     mult = SLOT_MULT[outcome]
     win = int(stake * mult)
     if outcome == 'free25':
-        text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
-                f"🎁 +25 фри спинов → +25,000 {EMO_NOX}")
-    elif outcome == 'new_1_2':
-        text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
-                f"✨ x1.2 → +{win:,} {EMO_NOX}")
-    elif outcome == 'new_5':
-        text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
-                f"⭐ x5 → +{win:,} {EMO_NOX}")
+        text = f"[ {_show_slots_row(syms)} ]\n{EMO_BONUS} +25 фри спинов → +25,000 {EMO_NOX}"
     elif outcome == 'super_jackpot':
-        text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
-                f"💎💎💎 SUPER JACKPOT x100 → +{win:,} {EMO_NOX}")
+        text = f"[ {_show_slots_row(syms)} ]\n{EMO_DIAMOND} SUPER JACKPOT x100 → +{win:,} {EMO_NOX}"
     elif outcome == 'diamond':
-        text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
-                f"💎 x10 → +{win:,} {EMO_NOX}")
+        text = f"[ {_show_slots_row(syms)} ]\n{EMO_DIAMOND} x10 → +{win:,} {EMO_NOX}"
     elif outcome == 'seven':
-        text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
-                f"7️⃣ x3 → +{win:,} {EMO_NOX}")
+        text = f"[ {_show_slots_row(syms)} ]\n7️⃣ x3 → +{win:,} {EMO_NOX}"
     elif outcome == 'strawberry':
-        text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
-                f"🍓 x2.5 → +{win:,} {EMO_NOX}")
+        text = f"[ {_show_slots_row(syms)} ]\n🍓 x2.5 → +{win:,} {EMO_NOX}"
     elif outcome == 'cherry':
-        text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
-                f"🍒 x2 → +{win:,} {EMO_NOX}")
+        text = f"[ {_show_slots_row(syms)} ]\n{EMO_CHERRY} x2 → +{win:,} {EMO_NOX}"
     elif outcome == 'kiwi':
-        text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
-                f"🥝 x1.5 → +{win:,} {EMO_NOX}")
+        text = f"[ {_show_slots_row(syms)} ]\n🥝 x1.5 → +{win:,} {EMO_NOX}"
+    elif outcome == 'new_1_2':
+        text = f"[ {_show_slots_row(syms)} ]\n✨ x1.2 → +{win:,} {EMO_NOX}"
+    elif outcome == 'new_5':
+        text = f"[ {_show_slots_row(syms)} ]\n{EMO_STARS} x5 → +{win:,} {EMO_NOX}"
     else:
-        text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
-                f"🔥 x{mult} → +{win:,} {EMO_NOX}")
+        text = f"[ {_show_slots_row(syms)} ]\n{EMO_FIRE} x{mult} → +{win:,} {EMO_NOX}"
     safe_send(chat_id, text, parse_mode='HTML')
 
 
@@ -1770,7 +1754,7 @@ def cmd_slots_chat(message):
                 eid, fb = SLOT_SYMBOLS['clover']
                 syms = [emo_tag(eid, fb)] * 4
                 safe_send(chat_id,
-                          f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
+                          f"[ {_show_slots_row(syms)} ]\n"
                           f"🍀 ФРИ СПИН! +1,000 {EMO_NOX}\n"
                           f"🔄 Крутим ещё (без списания)...",
                           parse_mode='HTML')
@@ -2555,7 +2539,7 @@ def run_dice_match_thread(cid, p1, p2, stake, mid):
         elif d2 > d1:
             finalize_game(cid, p2['user_id'], p1['user_id'], stake, 'dice', 'win', mid)
         else:
-            safe_send(cid, f"{EMO_HANDSHAKE} Ничья ({d1}:{d2})! Перекидываем...")
+            safe_send(cid, f"{EMO_HANDSHAKE} Ничья ({d1}:{d2})! Перекидываем...", parse_mode='HTML')
             time.sleep(2)
             run_dice_match_thread(cid, p1, p2, stake, mid)
     except Exception:
@@ -3889,7 +3873,7 @@ def show_moderators(message):
     text = f"{EMO_MODS} <b>МОДЕРАТОРЫ</b>\n\n"
     for row in rows:
         u = get_or_create_user(row['user_id'], "", "")
-        icon = EMO_CROWN if row['role'] == 'owner' else "🛡️"
+        icon = EMO_CROWN if row['role'] == 'owner' else EMO_MODS
         role = "Владелец" if row['role'] == 'owner' else "Модератор"
         text += f"{icon} {role} — {get_user_display(u)}\n"
     safe_send(message.chat.id, text, parse_mode='HTML')
@@ -4173,7 +4157,7 @@ def process_promo_create(message):
                 (code, rw, mx))
             conn.commit()
             conn.close()
-        safe_send(message.chat.id, f"{EMO_SAFE} Промо: <code>{code}</code>\n💰 {rw:,}\n👥 {mx}", parse_mode='HTML')
+        safe_send(message.chat.id, f"{EMO_SAFE} Промо: <code>{code}</code>\n{EMO_NOX} {rw:,}\n👥 {mx}", parse_mode='HTML')
     except Exception:
         safe_send(message.chat.id, "❌ Формат: <b>код</b> <b>активаций</b> <b>сумма</b>", parse_mode='HTML')
 
