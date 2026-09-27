@@ -67,7 +67,7 @@ SLOT_SYMBOLS = {
     'kiwi': ('5791848593627289156', '🥝'),
 }
 SLOT_MULT = {
-    'tangerine': 0.75,
+    'tangerine': 0.30,
     'cherry': 2.0,
     'seven': 3.0,
     'diamond': 10.0,
@@ -2603,7 +2603,7 @@ def _slots_send_result(chat_id, outcome, stake):
     win = int(stake * mult)
     if outcome == 'tangerine':
         text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
-                f"🍊 Возврат x{mult} → +{win:,} {EMO_NOX}")
+                f"🍊 Возврат 30% → +{win:,} {EMO_NOX}")
     elif outcome == 'kiwi':
         text = (f"{EMO_SLOTS} [ {_show_slots_row(syms)} ]\n"
                 f"🥝 x{mult}! → +{win:,} {EMO_NOX}")
