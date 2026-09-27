@@ -15,14 +15,13 @@ BOT_PHOTO_URL = 'https://ibb.co/jSGN6J2'
 CHAT_LINK = 'https://t.me/Nox_chatik'
 DATABASE_URL = os.environ.get('DATABASE_URL', '')
 
-# ---------- BOT (threaded!) ----------
 bot = telebot.TeleBot(API_TOKEN, threaded=True)
 
 active_games = {}
 timer_flags = {}
 timer_threads = {}
 invites = {}
-db_lock = threading.RLock()          # RLock — избегаем дедлоков
+db_lock = threading.RLock()
 invite_lock = threading.Lock()
 player_in_game = set()
 casino_in_progress = {}
@@ -41,10 +40,9 @@ CLAN_EMOJI_PER_PAGE = 20
 QUICK_BONUS_INTERVAL = 10 * 60
 QUICK_BONUS_AMOUNT = 500
 
-# Кэши
-sub_check_cache = {}       # {(user_id, chat_id): (expire_ts, allowed)}
+sub_check_cache = {}
 SUB_CACHE_TTL = 30
-user_clan_cache = {}       # {user_id: (expire_ts, clan_dict_or_None)}
+user_clan_cache = {}
 USER_CLAN_TTL = 15
 BOT_ID_CACHE = {'id': None}
 
@@ -404,6 +402,42 @@ def init_db():
             'INSERT INTO moderators (user_id, role, added_by) VALUES (%s, %s, %s) '
             'ON CONFLICT (user_id) DO NOTHING',
             (OWNER_ID, 'owner', OWNER_ID))
+
+        # ===== СИДИРОВАНИЕ ДЕФОЛТНЫХ ЭМОДЗИ/КОРОН ДЛЯ КЛАНОВ =====
+        cursor.execute('SELECT COUNT(*) AS c FROM clan_emojis')
+        if cursor.fetchone()['c'] == 0:
+            default_emojis = [
+                ('5274165555396390084', '💰'),
+                ('5280816565657300091', '🎲'),
+                ('5285423837205260312', '🎟'),
+                ('5213071346417812800', '🏢'),
+                ('5244590801438138696', '🏆'),
+                ('5327938120740523910', '📢'),
+                ('5262878819429141746', '📖'),
+                ('5323261373801571717', '🆘'),
+                ('5463002283715349737', '💳'),
+                ('6008353471202333128', '⭐'),
+                ('5379930048478330552', '💀'),
+                ('5384509325429463744', '🎰'),
+            ]
+            for eid, fb in default_emojis:
+                cursor.execute(
+                    'INSERT INTO clan_emojis (emoji_id, fallback) VALUES (%s, %s) ON CONFLICT (emoji_id) DO NOTHING',
+                    (eid, fb))
+
+        cursor.execute('SELECT COUNT(*) AS c FROM clan_crowns')
+        if cursor.fetchone()['c'] == 0:
+            default_crowns = [
+                ('5217822164362739968', '👑'),
+                ('6129805886383723340', '👑'),
+                ('5224575413253274698', '🏰'),
+                ('5244590801438138696', '🏆'),
+            ]
+            for eid, fb in default_crowns:
+                cursor.execute(
+                    'INSERT INTO clan_crowns (emoji_id, fallback) VALUES (%s, %s) ON CONFLICT (emoji_id) DO NOTHING',
+                    (eid, fb))
+        # ===== КОНЕЦ СИДИРОВАНИЯ =====
 
         conn.commit()
         conn.close()
@@ -994,7 +1028,6 @@ def check_required_subscriptions(user_id, chat_id, message_id=None, sender_chat=
     if bid is not None and user_id == bid:
         return True
 
-    # ---- КЭШ ----
     key = (user_id, chat_id)
     now = time.time()
     cached = sub_check_cache.get(key)
@@ -1059,7 +1092,7 @@ def check_required_subscriptions(user_id, chat_id, message_id=None, sender_chat=
         markup.add(btn("Я подписался/вступил", callback_data="check_subscribe", style='success'))
         text += f"\nОсталось попыток: <b>{5 - attempts}</b>"
         safe_send(chat_id, text, parse_mode='HTML', reply_markup=markup)
-        sub_check_cache[key] = (now + 5, False)  # короткий кэш на отказ
+        sub_check_cache[key] = (now + 5, False)
         return False
     else:
         unsub_attempts.pop(key, None)
@@ -1072,7 +1105,6 @@ def handle_subscribe_check(call):
     try:
         user_id = call.from_user.id
         chat_id = call.message.chat.id
-        # сбрасываем кэш чтобы перепроверить
         sub_check_cache.pop((user_id, chat_id), None)
         if check_required_subscriptions(user_id, chat_id):
             try:
@@ -1087,7 +1119,9 @@ def handle_subscribe_check(call):
         safe_answer(call.id, "❌ Ошибка!", show_alert=True)
 
 
-# ================== КЛАНЫ — ХЭНДЛЕРЫ (СТАВИМ ПЕРВЫМИ!) ==================
+# ==========================================================
+# ============ КЛАНЫ — ХЭНДЛЕРЫ (САМЫЕ ПЕРВЫЕ) =============
+# ==========================================================
 
 def build_clans_list_text(page=0):
     clans = get_all_clans()
@@ -1121,7 +1155,10 @@ def build_clans_list_text(page=0):
 def cmd_clans(message):
     try:
         text, markup = build_clans_list_text(0)
-        safe_send(message.chat.id, text, parse_mode='HTML', reply_markup=markup)
+        if markup is None:
+            safe_send(message.chat.id, text, parse_mode='HTML')
+        else:
+            safe_send(message.chat.id, text, parse_mode='HTML', reply_markup=markup)
     except Exception as e:
         print(f"[CLANS CMD ERR] {e}")
         safe_send(message.chat.id, f"{EMO_CANCEL} Ошибка: {e}", parse_mode='HTML')
@@ -1284,8 +1321,6 @@ def build_games_list():
         f"{EMO_CLAN} <b>КЛАНЫ</b> — команды <code>кланы</code> / <code>клан</code>"
     )
 
-
-# ---------- ПРОЧИЕ ОСНОВНЫЕ КОМАНДЫ ----------
 
 @bot.message_handler(func=lambda m: m.text and m.text.strip().lower() == 'б')
 def cmd_balance_short(message):
@@ -1804,7 +1839,10 @@ def show_games_callback(call):
 def clans_page_cb(call):
     page = int(call.data.split("_")[2])
     text, markup = build_clans_list_text(page)
-    safe_edit(call.message.chat.id, call.message.message_id, text, parse_mode='HTML', reply_markup=markup)
+    if markup is None:
+        safe_edit(call.message.chat.id, call.message.message_id, text, parse_mode='HTML')
+    else:
+        safe_edit(call.message.chat.id, call.message.message_id, text, parse_mode='HTML', reply_markup=markup)
     safe_answer(call.id)
 
 
@@ -2345,12 +2383,7 @@ def clan_leave_cb(call):
     safe_edit(call.message.chat.id, call.message.message_id, text, parse_mode='HTML', reply_markup=markup)
 
 
-# ---------- ИГРЫ ----------
-# (все игровые хэндлеры — слот, сундук, этажи, рулетка, орёл/решка, кости,
-#  цуефа, крестики, мины, число, переводы, модерация, админка — полностью
-#  сохранены из предыдущей версии, включая таймеры, active_games и логику)
-#
-# Оставляю полный код игр ниже:
+# ================== ИГРЫ ==================
 
 user_decks = {}
 
@@ -2788,7 +2821,7 @@ def floors_take(call):
     stake = int(parts[4])
     mult = float(parts[5])
     if call.from_user.id != user_id:
-        safe_answer(call.id, "🖕 Не твоя!", show_alert=True)
+        safe_answer(call.id, "🖖 Не твоя!", show_alert=True)
         return
     wa = int(stake * mult)
     update_balance(user_id, wa)
@@ -2798,8 +2831,6 @@ def floors_take(call):
               f"{EMO_GOLDTEXT} ЗАБРАЛ!\n+{wa:,} {EMO_NOX}! (x{mult})", parse_mode='HTML')
     safe_answer(call.id, f"✅ +{wa}!")
 
-
-# ---------- РУЛЕТКА / ОРЁЛ / КОСТИ / ЦУЕФА / КРЕСТИКИ / МИНЫ / ЧИСЛО ----------
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith('рулетка'))
 def cmd_roulette_game(message):
