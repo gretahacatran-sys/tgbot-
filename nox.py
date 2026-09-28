@@ -39,7 +39,8 @@ QUICK_BONUS_AMOUNT = 500
 slot_cooldowns = {}
 SLOT_COOLDOWN_SECONDS = 3
 BIO_BONUS_AMOUNT = 5000
-BIO_LINK_KEYWORDS = ['nox_chatik', 'noxhubbot', 'noxhub']
+# Ключевые слова для проверки био/ника. @NoxHub убран.
+BIO_LINK_KEYWORDS = ['nox_chatik', 'noxhubbot']
 
 sub_check_cache = {}
 SUB_CACHE_TTL = 30
@@ -431,16 +432,20 @@ def _bio_contains_keyword(text):
     return any(kw in t for kw in BIO_LINK_KEYWORDS)
 
 
-def check_user_bio_link_detailed(user_id, username=None):
-    """Возвращает (has_link, request_ok)."""
+def check_user_bio_link_detailed(user_id, username=None, first_name=None):
+    """Проверяет ссылку в описании (bio) И в нике (first_name) И в username.
+    Возвращает (has_link, request_ok)."""
     try:
         chat = bot.get_chat(user_id)
         bio = getattr(chat, 'bio', None) or ''
         un = getattr(chat, 'username', None) or ''
-        result = _bio_contains_keyword(bio) or _bio_contains_keyword(un)
-        if not result and username:
-            if _bio_contains_keyword(username):
-                result = True
+        fn = getattr(chat, 'first_name', None) or ''
+        # Проверяем и bio, и ник, и username
+        result = _bio_contains_keyword(bio) or _bio_contains_keyword(un) or _bio_contains_keyword(fn)
+        if not result and username and _bio_contains_keyword(username):
+            result = True
+        if not result and first_name and _bio_contains_keyword(first_name):
+            result = True
         return (result, True)
     except Exception as e:
         print(f"[BIO CHECK ERR] {e}")
@@ -476,21 +481,21 @@ def format_bio_bonus_time(seconds):
 
 def activate_vip(uid, chat_id, message=None):
     """
-    Логика VIP:
-    - Если ссылка есть и VIP не активен → активируем + СРАЗУ начисляем 5000.
-    - Если ссылка есть и VIP активен, но сегодня ещё не начисляли → +5000.
-    - Если ссылки нет, но VIP активен → СНИМАЕМ VIP и списываем 5000.
+    VIP:
+    - Есть ссылка + VIP не активен → активируем + СРАЗУ +5000.
+    - Есть ссылка + VIP активен + новый день → +5000.
+    - Нет ссылки + VIP активен → снимаем VIP и -5000.
     """
     try:
         user = get_or_create_user(uid, "", "")
         uname = message.from_user.username if (message and getattr(message, 'from_user', None)) else None
-        has_link, request_ok = check_user_bio_link_detailed(uid, uname)
+        fname = message.from_user.first_name if (message and getattr(message, 'from_user', None)) else None
+        has_link, request_ok = check_user_bio_link_detailed(uid, uname, fname)
         was_active = user['bio_bonus_active'] == 1
         today = get_moscow_date()
 
         if has_link:
             if not was_active:
-                # Первая активация — сразу +5000
                 with db_lock:
                     conn = get_db_connection()
                     cursor = db_cursor(conn)
@@ -514,7 +519,6 @@ def activate_vip(uid, chat_id, message=None):
                           parse_mode='HTML')
                 return True
             elif user['bio_bonus_last_date'] != today:
-                # Новый день — начисляем ещё 5000
                 with db_lock:
                     conn = get_db_connection()
                     cursor = db_cursor(conn)
@@ -528,7 +532,6 @@ def activate_vip(uid, chat_id, message=None):
                           parse_mode='HTML')
         else:
             if was_active:
-                # Ссылки нет — снимаем VIP и списываем 5000
                 with db_lock:
                     conn = get_db_connection()
                     cursor = db_cursor(conn)
@@ -1146,20 +1149,19 @@ def bio_bonus_info_cb(call):
         cid = call.message.chat.id
         user = get_or_create_user(uid, call.from_user.username, call.from_user.first_name)
         has = user['bio_bonus_active'] == 1
-        link_ok, _ = check_user_bio_link_detailed(uid, call.from_user.username)
+        link_ok, _ = check_user_bio_link_detailed(uid, call.from_user.username, call.from_user.first_name)
 
         text = (f"{EMO_VIP} <b>5000 НОКСОВ СРАЗУ + VIP-ЗНАЧОК</b> {EMO_VIP}\n\n"
                 f"<b>Что даёт:</b>\n"
                 f"• {EMO_NOX} <b>+5,000 ноксов сразу</b> при подключении\n"
                 f"• {EMO_NOX} <b>+5,000 каждый день</b> в 00:00 МСК\n"
                 f"• {EMO_VIP} <b>VIP-значок</b> рядом с ником\n\n"
-                f"<b>Где разместить ссылку:</b>\n"
-                f"1. В поле «О себе» (Bio)\n"
-                f"2. В <b>@username</b> (например <code>@nox_chatik_bot</code>)\n\n"
-                f"<b>Любая из этих ссылок подойдёт:</b>\n"
+                f"<b>Куда вставить ссылку:</b>\n"
+                f"1. В <b>ник</b> (имя) Telegram — например «Иван @Nox_chatik»\n"
+                f"2. В поле «О себе» (Bio)\n\n"
+                f"<b>Подходящие ссылки:</b>\n"
                 f"• <code>@Nox_chatik</code>\n"
                 f"• <code>@NoxHubBot</code>\n"
-                f"• <code>@NoxHub</code>\n"
                 f"• <code>https://t.me/Nox_chatik</code>\n\n"
                 f"{EMO_BULB} Просто напиши любое сообщение в чате — бот сам найдёт ссылку и подключит VIP.\n\n"
                 f"{EMO_CANCEL} Уберёшь ссылку — VIP снимется и спишется <b>5,000</b> ноксов.\n\n")
@@ -1174,7 +1176,7 @@ def bio_bonus_info_cb(call):
             safe_answer(call.id, "✅ Ссылка найдена! Напиши в чат.", show_alert=True)
         else:
             text += (f"{EMO_CANCEL} <b>Статус: не подключено.</b>\n"
-                     f"Добавь одну из ссылок в Bio/username и напиши в @Nox_chatik.")
+                     f"Добавь ссылку в ник или Bio и напиши в @Nox_chatik.")
             safe_answer(call.id, "❌ Добавь ссылку и напиши в чат", show_alert=True)
 
         markup = types.InlineKeyboardMarkup(row_width=1)
@@ -1424,12 +1426,12 @@ def cmd_rules(message):
             f"{EMO_CANCEL} <b>ЗАПРЕЩЕНО</b>\n• 18+ — мут 2ч\n• Жесть — мут 2ч\n• Спам — мут 2ч\n• Реклама — мут 10ч\n• Оскорбление модеров — мут 30м\n\n"
             f"{EMO_SAFE} <b>РАЗРЕШЕНО</b>\n• Оскорбления\n• Капс\n• Политика\n• Токсичность\n\n"
             f"{EMO_REPORT} <b>ЖАЛОБЫ</b> — модераторам.\n\n"
-            f"{EMO_VIP} <b>VIP-СТАТУС (5000 ноксов сразу + каждый день)</b>\n"
-            f"Где разместить ссылку:\n"
+            f"{EMO_VIP} <b>VIP-СТАТУС (5000 сразу + каждый день)</b>\n"
+            f"Куда вставить ссылку:\n"
+            f"• В <b>ник</b> (имя) Telegram\n"
             f"• В поле <b>«О себе»</b> (Bio)\n"
-            f"• В <b>@username</b>\n"
-            f"Любая из этих ссылок:\n"
-            f"<code>@Nox_chatik</code>, <code>@NoxHubBot</code>, <code>@NoxHub</code>, <code>https://t.me/Nox_chatik</code>\n"
+            f"Подходящие ссылки:\n"
+            f"<code>@Nox_chatik</code>, <code>@NoxHubBot</code>, <code>https://t.me/Nox_chatik</code>\n"
             f"Просто напиши сообщение в чат — бот сам подключит.\n\n"
             f"{EMO_BULB} Все игры: <b>игры</b>")
     safe_send(message.chat.id, text, parse_mode='HTML')
@@ -1482,8 +1484,8 @@ def show_rules(call):
             f"<b>{EMO_BONUS} БОНУСЫ</b>\n   <code>бонус</code>\n\n"
             f"<b>⚡ КОМАНДЫ</b>\n   {EMO_PROFILE} <code>профиль</code>\n   {EMO_NOX} <code>б</code>\n   {EMO_TROPHY} <code>топ богатых</code>\n\n"
             f"<b>{EMO_VIP} VIP (5000 сразу + каждый день)</b>\n"
-            f"Ссылку можно указать в Bio или в @username.\n"
-            f"Подходит: <code>@Nox_chatik</code>, <code>@NoxHubBot</code>, <code>@NoxHub</code>\n\n"
+            f"Ссылку можно указать в <b>нике</b> или в <b>Bio</b>.\n"
+            f"Подходит: <code>@Nox_chatik</code>, <code>@NoxHubBot</code>\n\n"
             f"💬 @Nox_chatik | {EMO_CHANNEL} @NoxHubs")
     markup = types.InlineKeyboardMarkup()
     markup.add(btn("Назад", callback_data="back_to_menu", style='primary', icon=ICO_BACK))
